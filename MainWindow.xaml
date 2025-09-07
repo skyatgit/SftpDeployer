@@ -81,7 +81,24 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="Auto" MinWidth="120" />
                             <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
-                            <DataGridTextColumn Header="权限" Binding="{Binding Permission, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="60" />
+                            <DataGridTextColumn Header="权限" Binding="{Binding Permission, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="60">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="HorizontalAlignment" Value="Center" />
+                                        <Setter Property="TextAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                                <DataGridTextColumn.EditingElementStyle>
+                                    <Style TargetType="TextBox">
+                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                        <Setter Property="MaxLength" Value="3" />
+                                        <EventSetter Event="PreviewTextInput" Handler="OnPermissionPreviewTextInput" />
+                                        <EventSetter Event="PreviewKeyDown" Handler="OnPermissionPreviewKeyDown" />
+                                        <EventSetter Event="DataObject.Pasting" Handler="OnPermissionPasting" />
+                                        <EventSetter Event="LostFocus" Handler="OnPermissionLostFocus" />
+                                    </Style>
+                                </DataGridTextColumn.EditingElementStyle>
+                            </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
