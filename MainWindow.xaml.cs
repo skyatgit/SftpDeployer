@@ -1,18 +1,20 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Security.Cryptography;
 using Microsoft.Win32;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 using Wpf.Ui.Controls;
+using DataGrid = System.Windows.Controls.DataGrid;
+using TextBox = System.Windows.Controls.TextBox;
 
 namespace WpfApp2;
 
@@ -234,24 +236,16 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         // 仅删除文件配置页 DataGrid 中选中的行；若未选择则不删除
         var selectedItems = FilesGrid?.SelectedItems;
-        if (selectedItems == null || selectedItems.Count == 0)
-        {
-            return; // 未选择任何行，不执行删除
-        }
+        if (selectedItems == null || selectedItems.Count == 0) return; // 未选择任何行，不执行删除
 
         // 收集要删除的 FileConfig 项
         var toRemove = new List<FileConfig>();
         foreach (var item in selectedItems)
-        {
             if (item is FileConfig fc)
                 toRemove.Add(fc);
-        }
         if (toRemove.Count == 0) return;
 
-        foreach (var f in toRemove.ToList())
-        {
-            Files.Remove(f);
-        }
+        foreach (var f in toRemove.ToList()) Files.Remove(f);
 
         // 更新选中项
         SelectedFile = Files.FirstOrDefault();
@@ -270,26 +264,18 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         // 仅删除服务器配置页 DataGrid 中选中的行；若未选择则不删除
         var selectedItems = ServersGrid?.SelectedItems;
-        if (selectedItems == null || selectedItems.Count == 0)
-        {
-            return; // 未选择任何行，不执行删除
-        }
+        if (selectedItems == null || selectedItems.Count == 0) return; // 未选择任何行，不执行删除
 
         var toRemove = new List<ServerConfig>();
         foreach (var item in selectedItems)
-        {
             if (item is ServerConfig sc)
                 toRemove.Add(sc);
-        }
         if (toRemove.Count == 0) return;
 
-        foreach (var s in toRemove.ToList())
-        {
-            Servers.Remove(s);
-        }
+        foreach (var s in toRemove.ToList()) Servers.Remove(s);
 
         // 清空选择，避免自动选中最后一行
-        ServersGrid.SelectedIndex = -1;
+        if (ServersGrid != null) ServersGrid.SelectedIndex = -1;
         RefreshAllFileServerSelections();
         SaveConfig();
     }
@@ -321,8 +307,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             var totalBytes = jobs.Sum(j => j.FileInfo.Length);
             if (totalBytes == 0) totalBytes = 1;
             long uploadedBytes = 0;
-            int successCount = 0;
-            int failCount = 0;
+            var successCount = 0;
+            var failCount = 0;
 
             foreach (var job in jobs)
             {
@@ -330,8 +316,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
                 try
                 {
-                    bool skipped = false;
-                    bool permApplied = false;
+                    var skipped = false;
+                    var permApplied = false;
                     string? permError = null;
                     string? appliedPermDigits = null;
                     await Task.Run(() =>
@@ -349,7 +335,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         // 计算本地文件哈希
                         string localHash;
                         using (var lfs = File.OpenRead(job.File.LocalPath))
+                        {
                             localHash = ComputeSha256Hex(lfs);
+                        }
 
                         // 若远端存在文件，则计算其哈希（失败则忽略，继续上传）
                         try
@@ -362,10 +350,17 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                                 {
                                     // 相同则跳过上传，但若设置了权限仍需应用
                                     if (TryParsePermissionOctal(job.File.Permission, out var mode))
-                                    {
-                                        try { sftp.ChangePermissions(remotePath, mode); permApplied = true; appliedPermDigits = job.File.Permission; }
-                                        catch (Exception exPerm) { permError = ToChineseError(exPerm); }
-                                    }
+                                        try
+                                        {
+                                            sftp.ChangePermissions(remotePath, mode);
+                                            permApplied = true;
+                                            appliedPermDigits = job.File.Permission;
+                                        }
+                                        catch (Exception exPerm)
+                                        {
+                                            permError = ToChineseError(exPerm);
+                                        }
+
                                     skipped = true;
                                     sftp.Disconnect();
                                     return;
@@ -397,9 +392,15 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         try
                         {
                             if (sftp.Exists(remotePath))
-                            {
-                                try { sftp.DeleteFile(remotePath); } catch { /* 忽略删除失败，继续尝试改名覆盖 */ }
-                            }
+                                try
+                                {
+                                    sftp.DeleteFile(remotePath);
+                                }
+                                catch
+                                {
+                                    /* 忽略删除失败，继续尝试改名覆盖 */
+                                }
+
                             sftp.RenameFile(tempPath, remotePath);
                         }
                         catch
@@ -408,15 +409,27 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                             using var ufs2 = File.OpenRead(job.File.LocalPath);
                             sftp.UploadFile(ufs2, remotePath, true);
                             // 尝试清理临时文件
-                            try { if (sftp.Exists(tempPath)) sftp.DeleteFile(tempPath); } catch { }
+                            try
+                            {
+                                if (sftp.Exists(tempPath)) sftp.DeleteFile(tempPath);
+                            }
+                            catch
+                            {
+                            }
                         }
 
                         // 上传完成后应用权限（如果提供）
                         if (TryParsePermissionOctal(job.File.Permission, out var mode2))
-                        {
-                            try { sftp.ChangePermissions(remotePath, mode2); permApplied = true; appliedPermDigits = job.File.Permission; }
-                            catch (Exception exPerm) { permError = ToChineseError(exPerm); }
-                        }
+                            try
+                            {
+                                sftp.ChangePermissions(remotePath, mode2);
+                                permApplied = true;
+                                appliedPermDigits = job.File.Permission;
+                            }
+                            catch (Exception exPerm)
+                            {
+                                permError = ToChineseError(exPerm);
+                            }
 
                         sftp.Disconnect();
                     });
@@ -429,13 +442,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     if (!string.IsNullOrWhiteSpace(job.File.Permission))
                     {
                         if (permApplied)
-                        {
                             AppendLog($"[{job.Server.Alias}] 已设置权限：{appliedPermDigits ?? job.File.Permission}");
-                        }
-                        else if (permError != null)
-                        {
-                            AppendLog($"[{job.Server.Alias}] 设置权限失败：{permError}");
-                        }
+                        else if (permError != null) AppendLog($"[{job.Server.Alias}] 设置权限失败：{permError}");
                     }
                 }
                 catch (Exception ex)
@@ -605,14 +613,203 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         OnPropertyChanged(nameof(CanUpload));
     }
 
+    private static string ComputeSha256Hex(Stream stream)
+    {
+        using var sha = SHA256.Create();
+        var hash = sha.ComputeHash(stream);
+        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+    }
+
+    private static bool TryParsePermissionOctal(string? text, out short mode)
+    {
+        // As required: do NOT convert bases. Treat the user input as the actual numeric value to apply.
+        // Allow empty => return false (means: do not set permissions).
+        mode = 0;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.Trim();
+
+        // Keep previous UI constraint: up to 3 digits, each 0-7 (handled by UI), but parse here as decimal.
+        if (!t.All(ch => ch >= '0' && ch <= '9')) return false;
+
+        try
+        {
+            var val = Convert.ToInt32(t, 10);
+            if (val < 0 || val > 0xFFF) return false;
+            mode = (short)val;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string FormatPermissionDigits(short mode)
+    {
+        // Return octal representation without leading sign, minimum 3 digits (owner/group/other), up to 4 if suid/sgid/sticky present
+        var oct = Convert.ToString(mode, 8);
+        if (oct.Length < 3) oct = oct.PadLeft(3, '0');
+        return oct;
+    }
+
+    // ===== 权限输入限制：仅允许0-7三位，非法输入被拦截 =====
+    private static bool IsValidPermissionDigits(string text)
+    {
+        if (text is null) return false;
+        if (text.Length == 0) return true; // 允许为空
+        foreach (var ch in text)
+            if (ch < '0' || ch > '7')
+                return false;
+        return text.Length <= 3;
+    }
+
+    private static string ComposeNewText(TextBox tb, string incoming)
+    {
+        var start = tb.SelectionStart;
+        var len = tb.SelectionLength;
+        var current = tb.Text ?? string.Empty;
+        if (start < 0 || start > current.Length) start = current.Length;
+        if (len < 0 || start + len > current.Length) len = Math.Max(0, current.Length - start);
+        var afterRemoval = current.Remove(start, len);
+        return afterRemoval.Insert(start, incoming ?? string.Empty);
+    }
+
+    private void OnPermissionPreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        if (sender is not TextBox tb) return;
+        var proposed = ComposeNewText(tb, e.Text);
+        if (!IsValidPermissionDigits(proposed)) e.Handled = true;
+    }
+
+    private void OnPermissionPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // 允许常用控制键与导航键
+        if (e.Key == Key.Back || e.Key == Key.Delete || e.Key == Key.Tab ||
+            e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Home || e.Key == Key.End)
+            return;
+        if (e.Key == Key.Space) e.Handled = true; // 禁止空格
+        // 其它按键由 PreviewTextInput 决定；此处不额外处理
+    }
+
+    private void OnPermissionPasting(object sender, DataObjectPastingEventArgs e)
+    {
+        if (sender is not TextBox tb) return;
+        if (!e.SourceDataObject.GetDataPresent(DataFormats.UnicodeText))
+        {
+            e.CancelCommand();
+            return;
+        }
+
+        var pasteText = e.SourceDataObject.GetData(DataFormats.UnicodeText) as string ?? string.Empty;
+        var proposed = ComposeNewText(tb, pasteText);
+        if (!IsValidPermissionDigits(proposed)) e.CancelCommand();
+    }
+
+    private void OnDataGridPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGrid grid) return;
+        var source = e.OriginalSource as DependencyObject;
+        var clickedOnRowOrCell = false;
+        while (source != null)
+        {
+            if (source is DataGridRow || source is DataGridCell)
+            {
+                clickedOnRowOrCell = true;
+                break;
+            }
+
+            // Stop if we bubbled up to the grid
+            if (ReferenceEquals(source, grid)) break;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        if (!clickedOnRowOrCell)
+        {
+            grid.UnselectAll();
+            grid.SelectedIndex = -1;
+            // 清除焦点，避免出现编辑状态
+            FocusManager.SetFocusedElement(FocusManager.GetFocusScope(grid), null);
+            Keyboard.ClearFocus();
+        }
+    }
+
+    // 单击“权限”单元格直接进入编辑并聚焦到 TextBox
+    private void OnPermissionCellPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGridCell cell) return;
+        if (cell.IsEditing) return;
+        e.Handled = true;
+        cell.Focus();
+        var row = FindVisualParent<DataGridRow>(cell);
+        if (row == null) return;
+        // 选中当前行并设置当前单元格
+        FilesGrid.SelectedItem = row.Item;
+        FilesGrid.CurrentCell = new DataGridCellInfo(row.Item, cell.Column);
+        FilesGrid.BeginEdit();
+        // 聚焦到编辑框
+        var tb = FindVisualChild<TextBox>(cell);
+        if (tb != null)
+        {
+            tb.Focus();
+            tb.CaretIndex = tb.Text?.Length ?? 0;
+        }
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject child) where T : DependencyObject
+    {
+        var parent = VisualTreeHelper.GetParent(child);
+        while (parent != null)
+        {
+            if (parent is T t) return t;
+            parent = VisualTreeHelper.GetParent(parent);
+        }
+
+        return null;
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        if (parent == null) return null;
+        var count = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T tChild) return tChild;
+            var result = FindVisualChild<T>(child);
+            if (result != null) return result;
+        }
+
+        return null;
+    }
+
+    private void OnPermissionLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox tb) return;
+        var t = tb.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrEmpty(t))
+        {
+            // keep empty as-is
+            if (tb.DataContext is FileConfig fcEmpty && fcEmpty.Permission != string.Empty)
+                fcEmpty.Permission = string.Empty;
+            return;
+        }
+
+        // pad to length 3 with trailing zeros
+        var normalized = t.PadRight(3, '0');
+        if (tb.Text != normalized)
+            tb.Text = normalized;
+        if (tb.DataContext is FileConfig fc && fc.Permission != normalized)
+            fc.Permission = normalized;
+    }
+
     // Models
     public class ServerConfig : INotifyPropertyChanged
     {
         private string _alias = string.Empty;
         private string _host = string.Empty;
         private string _password = string.Empty;
-        private string _username = string.Empty;
         private int _port = 22;
+        private string _username = string.Empty;
 
         public string Alias
         {
@@ -705,9 +902,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         private bool _hasAnyServerSelected;
         private bool _isSelected;
         private string _localPath = string.Empty;
+        private string _permission = string.Empty;
         private ObservableCollection<ServerSelection> _serverSelections = new();
         private string _targetPath = string.Empty;
-        private string _permission = string.Empty;
 
         public string LocalPath
         {
@@ -791,205 +988,5 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         public List<ServerConfig> Servers { get; set; } = new();
         public List<FileConfigDTO> Files { get; set; } = new();
-    }
-
-    private static string ComputeSha256Hex(Stream stream)
-    {
-        using var sha = SHA256.Create();
-        var hash = sha.ComputeHash(stream);
-        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-    }
-
-    private static bool TryParsePermissionOctal(string? text, out short mode)
-    {
-        // As required: do NOT convert bases. Treat the user input as the actual numeric value to apply.
-        // Allow empty => return false (means: do not set permissions).
-        mode = 0;
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        var t = text.Trim();
-
-        // Keep previous UI constraint: up to 3 digits, each 0-7 (handled by UI), but parse here as decimal.
-        if (!t.All(ch => ch >= '0' && ch <= '9')) return false;
-
-        try
-        {
-            var val = Convert.ToInt32(t, 10);
-            if (val < 0 || val > 0xFFF) return false;
-            mode = (short)val;
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static string FormatPermissionDigits(short mode)
-    {
-        // Return octal representation without leading sign, minimum 3 digits (owner/group/other), up to 4 if suid/sgid/sticky present
-        var oct = Convert.ToString(mode, 8);
-        if (oct.Length < 3) oct = oct.PadLeft(3, '0');
-        return oct;
-    }
-
-    // ===== 权限输入限制：仅允许0-7三位，非法输入被拦截 =====
-    private static bool IsValidPermissionDigits(string text)
-    {
-        if (text is null) return false;
-        if (text.Length == 0) return true; // 允许为空
-        foreach (var ch in text)
-        {
-            if (ch < '0' || ch > '7') return false;
-        }
-        return text.Length <= 3;
-    }
-
-    private static string ComposeNewText(System.Windows.Controls.TextBox tb, string incoming)
-    {
-        var start = tb.SelectionStart;
-        var len = tb.SelectionLength;
-        var current = tb.Text ?? string.Empty;
-        if (start < 0 || start > current.Length) start = current.Length;
-        if (len < 0 || start + len > current.Length) len = Math.Max(0, current.Length - start);
-        var afterRemoval = current.Remove(start, len);
-        return afterRemoval.Insert(start, incoming ?? string.Empty);
-    }
-
-    private void OnPermissionPreviewTextInput(object sender, TextCompositionEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.TextBox tb) return;
-        var proposed = ComposeNewText(tb, e.Text);
-        if (!IsValidPermissionDigits(proposed))
-        {
-            e.Handled = true;
-        }
-    }
-
-    private void OnPermissionPreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        // 允许常用控制键与导航键
-        if (e.Key == Key.Back || e.Key == Key.Delete || e.Key == Key.Tab ||
-            e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Home || e.Key == Key.End)
-        {
-            return;
-        }
-        if (e.Key == Key.Space)
-        {
-            e.Handled = true; // 禁止空格
-            return;
-        }
-        // 其它按键由 PreviewTextInput 决定；此处不额外处理
-    }
-
-    private void OnPermissionPasting(object sender, DataObjectPastingEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.TextBox tb)
-        {
-            return;
-        }
-        if (!e.SourceDataObject.GetDataPresent(DataFormats.UnicodeText))
-        {
-            e.CancelCommand();
-            return;
-        }
-        var pasteText = e.SourceDataObject.GetData(DataFormats.UnicodeText) as string ?? string.Empty;
-        var proposed = ComposeNewText(tb, pasteText);
-        if (!IsValidPermissionDigits(proposed))
-        {
-            e.CancelCommand();
-        }
-    }
-
-    private void OnDataGridPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.DataGrid grid) return;
-        var source = e.OriginalSource as DependencyObject;
-        bool clickedOnRowOrCell = false;
-        while (source != null)
-        {
-            if (source is System.Windows.Controls.DataGridRow || source is System.Windows.Controls.DataGridCell)
-            {
-                clickedOnRowOrCell = true;
-                break;
-            }
-            // Stop if we bubbled up to the grid
-            if (ReferenceEquals(source, grid)) break;
-            source = VisualTreeHelper.GetParent(source);
-        }
-
-        if (!clickedOnRowOrCell)
-        {
-            grid.UnselectAll();
-            grid.SelectedIndex = -1;
-            // 清除焦点，避免出现编辑状态
-            FocusManager.SetFocusedElement(FocusManager.GetFocusScope(grid), null);
-            Keyboard.ClearFocus();
-        }
-    }
-
-    // 单击“权限”单元格直接进入编辑并聚焦到 TextBox
-    private void OnPermissionCellPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not DataGridCell cell) return;
-        if (cell.IsEditing) return;
-        e.Handled = true;
-        cell.Focus();
-        var row = FindVisualParent<DataGridRow>(cell);
-        if (row == null) return;
-        // 选中当前行并设置当前单元格
-        FilesGrid.SelectedItem = row.Item;
-        FilesGrid.CurrentCell = new DataGridCellInfo(row.Item, cell.Column);
-        FilesGrid.BeginEdit();
-        // 聚焦到编辑框
-        var tb = FindVisualChild<System.Windows.Controls.TextBox>(cell);
-        if (tb != null)
-        {
-            tb.Focus();
-            tb.CaretIndex = tb.Text?.Length ?? 0;
-        }
-    }
-
-    private static T? FindVisualParent<T>(DependencyObject child) where T : DependencyObject
-    {
-        var parent = VisualTreeHelper.GetParent(child);
-        while (parent != null)
-        {
-            if (parent is T t) return t;
-            parent = VisualTreeHelper.GetParent(parent);
-        }
-        return null;
-    }
-
-    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
-    {
-        if (parent == null) return null;
-        var count = VisualTreeHelper.GetChildrenCount(parent);
-        for (int i = 0; i < count; i++)
-        {
-            var child = VisualTreeHelper.GetChild(parent, i);
-            if (child is T tChild) return tChild;
-            var result = FindVisualChild<T>(child);
-            if (result != null) return result;
-        }
-        return null;
-    }
-
-    private void OnPermissionLostFocus(object sender, RoutedEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.TextBox tb) return;
-        var t = tb.Text?.Trim() ?? string.Empty;
-        if (string.IsNullOrEmpty(t))
-        {
-            // keep empty as-is
-            if (tb.DataContext is FileConfig fcEmpty && fcEmpty.Permission != string.Empty)
-                fcEmpty.Permission = string.Empty;
-            return;
-        }
-        // pad to length 3 with trailing zeros
-        var normalized = t.PadRight(3, '0');
-        if (tb.Text != normalized)
-            tb.Text = normalized;
-        if (tb.DataContext is FileConfig fc && fc.Permission != normalized)
-            fc.Permission = normalized;
     }
 }
