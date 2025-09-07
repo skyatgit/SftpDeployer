@@ -21,9 +21,9 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="150" />
                     </Grid.RowDefinitions>
-                    <ui:DataGrid ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False">
+                    <ui:DataGrid ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto" HorizontalScrollBarVisibility="Auto">
                         <ui:DataGrid.Columns>
-                            <DataGridTemplateColumn Header="选择" Width="60">
+                            <DataGridTemplateColumn Header="选择" Width="Auto" MinWidth="60">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding HasAnyServerSelected}"
@@ -31,9 +31,9 @@
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="300" />
-                            <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath}" IsReadOnly="True" Width="260" />
-                            <DataGridTemplateColumn Header="服务器" Width="*">
+                            <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="Auto" MinWidth="120" />
+                            <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath}" IsReadOnly="True" Width="Auto" MinWidth="80" />
+                            <DataGridTemplateColumn Header="服务器" Width="Auto" MinWidth="100">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <ItemsControl ItemsSource="{Binding ServerSelections}">
@@ -73,12 +73,12 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <DataGrid x:Name="FilesGrid" ItemsSource="{Binding Files}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False"
+                    <DataGrid x:Name="FilesGrid" ItemsSource="{Binding Files}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto" HorizontalScrollBarVisibility="Auto"
                             PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="*" />
-                            <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="2*" />
-                            <DataGridTemplateColumn Header="权限" Width="80">
+                            <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="Auto" MinWidth="120" />
+                            <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
+                            <DataGridTemplateColumn Header="权限" Width="Auto" MinWidth="60">
                                 <DataGridTemplateColumn.CellStyle>
                                     <Style TargetType="DataGridCell">
                                         <EventSetter Event="PreviewMouseLeftButtonDown" Handler="OnPermissionCellPreviewMouseLeftButtonDown" />
@@ -127,14 +127,14 @@
                             </CollectionViewSource.LiveSortingProperties>
                         </CollectionViewSource>
                     </Grid.Resources>
-                    <DataGrid x:Name="ServersGrid" ItemsSource="{Binding Source={StaticResource ServersView}}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False"
+                    <DataGrid x:Name="ServersGrid" ItemsSource="{Binding Source={StaticResource ServersView}}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto" HorizontalScrollBarVisibility="Auto"
                             PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="别名" Binding="{Binding Alias, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*" />
-                            <DataGridTextColumn Header="IP/主机" Binding="{Binding Host, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*" />
-                            <DataGridTextColumn Header="端口" Binding="{Binding Port, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="80" />
-                            <DataGridTextColumn Header="用户名" Binding="{Binding Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*" />
-                            <DataGridTextColumn Header="密码" Binding="{Binding Password, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                            <DataGridTextColumn Header="别名" Binding="{Binding Alias, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="80" />
+                            <DataGridTextColumn Header="服务器IP" Binding="{Binding Host, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
+                            <DataGridTextColumn Header="端口" Binding="{Binding Port, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="60" />
+                            <DataGridTextColumn Header="用户名" Binding="{Binding Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="100" />
+                            <DataGridTextColumn Header="密码" Binding="{Binding Password, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="100" />
                         </DataGrid.Columns>
                     </DataGrid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
