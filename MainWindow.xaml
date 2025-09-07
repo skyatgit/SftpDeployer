@@ -96,7 +96,8 @@
                                                  HorizontalContentAlignment="Center"
                                                  PreviewTextInput="OnPermissionPreviewTextInput"
                                                  PreviewKeyDown="OnPermissionPreviewKeyDown"
-                                                 DataObject.Pasting="OnPermissionPasting"/>
+                                                 DataObject.Pasting="OnPermissionPasting"
+                                                 LostFocus="OnPermissionLostFocus"/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellEditingTemplate>
                             </DataGridTemplateColumn>

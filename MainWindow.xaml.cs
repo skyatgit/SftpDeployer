@@ -973,4 +973,23 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
         return null;
     }
+
+    private void OnPermissionLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.TextBox tb) return;
+        var t = tb.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrEmpty(t))
+        {
+            // keep empty as-is
+            if (tb.DataContext is FileConfig fcEmpty && fcEmpty.Permission != string.Empty)
+                fcEmpty.Permission = string.Empty;
+            return;
+        }
+        // pad to length 3 with trailing zeros
+        var normalized = t.PadRight(3, '0');
+        if (tb.Text != normalized)
+            tb.Text = normalized;
+        if (tb.DataContext is FileConfig fc && fc.Permission != normalized)
+            fc.Permission = normalized;
+    }
 }
