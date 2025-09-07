@@ -1,6 +1,6 @@
 ﻿using System.Windows;
 
-namespace WpfApp2;
+namespace SftpDeployer;
 
 public partial class App : Application
 {

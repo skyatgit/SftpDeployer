@@ -16,12 +16,12 @@ using Wpf.Ui.Controls;
 using DataGrid = System.Windows.Controls.DataGrid;
 using TextBox = System.Windows.Controls.TextBox;
 
-namespace WpfApp2;
+namespace SftpDeployer;
 
 public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 {
     // 配置持久化
-    private readonly string _configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WpfApp2");
+    private readonly string _configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SftpDeployer");
     private readonly string _configFile;
 
     private bool _isUploading;

@@ -6,11 +6,19 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <UseWPF>true</UseWPF>
+        <RootNamespace>SftpDeployer</RootNamespace>
+        <AssemblyName>SftpDeployer</AssemblyName>
+        <Product>SftpDeployer</Product>
+        <Description>基于 WPF-UI 的多服务器 SFTP 部署工具</Description>
     </PropertyGroup>
 
     <ItemGroup>
         <PackageReference Include="WPF-UI" Version="4.0.3"/>
         <PackageReference Include="SSH.NET" Version="2023.0.1"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <Content Include="SftpDeployer.sln" />
     </ItemGroup>
 
 </Project>
