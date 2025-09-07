@@ -20,7 +20,7 @@ namespace WpfApp2;
 
 public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 {
-    // Persistence
+    // 配置持久化
     private readonly string _configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WpfApp2");
     private readonly string _configFile;
 
@@ -43,7 +43,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         _configFile = Path.Combine(_configDir, "config.json");
         Loaded += (_, __) => LoadConfig();
 
-        // Listen collection changes to keep selections in sync and auto-save
+        // 监听集合变化以保持选择同步，并自动保存
         Servers.CollectionChanged += (s, args) =>
         {
             if (args?.NewItems != null)
@@ -72,7 +72,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         };
     }
 
-    // Collections bound to UI
+    // 供界面绑定的集合
     public ObservableCollection<ServerConfig> Servers { get; } = new();
     public ObservableCollection<FileConfig> Files { get; } = new();
 
@@ -198,7 +198,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         LogText += (LogText.Length > 0 ? Environment.NewLine : string.Empty) + message;
     }
 
-    // Button handlers
+    // 按钮事件
     private void OnAddFileClick(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
@@ -290,7 +290,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
         try
         {
-            // Gather tasks
+            // 准备上传任务列表
             var jobs = (from f in Files.Where(f => f.IsSelected)
                 let fileInfo = new FileInfo(f.LocalPath)
                 where fileInfo.Exists
@@ -453,7 +453,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 }
                 finally
                 {
-                    // Advance global progress by the full size of this job, even on failure
+                    // 即使失败也按该任务大小推进全局进度
                     uploadedBytes += job.FileInfo.Length;
                     var percent = Math.Min(100.0, uploadedBytes * 100.0 / totalBytes);
                     UploadStatus = $"已完成：{Math.Round(percent, 1)}%";
@@ -461,7 +461,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 }
             }
 
-            // Final status summary
+            // 最终状态汇总
             if (failCount == 0)
             {
                 UploadProgress = 100;
@@ -510,7 +510,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             }
             catch
             {
-                // ignore create errors (may exist or no permission)
+                // 忽略创建目录的异常（可能已存在或无权限）
             }
         }
     }
@@ -545,7 +545,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
         catch
         {
-            // ignore persistence errors silently
+            // 持久化失败时忽略异常（静默处理）
         }
     }
 
@@ -598,7 +598,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
         catch
         {
-            // ignore loading errors
+            // 加载失败时忽略异常（静默处理）
         }
         finally
         {
@@ -622,13 +622,13 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
     private static bool TryParsePermissionOctal(string? text, out short mode)
     {
-        // As required: do NOT convert bases. Treat the user input as the actual numeric value to apply.
-        // Allow empty => return false (means: do not set permissions).
+        // 按需求：不要进行进制转换；用户输入的数字即为实际要应用的数值。
+        // 允许为空：返回 false（表示不设置权限）。
         mode = 0;
         if (string.IsNullOrWhiteSpace(text)) return false;
         var t = text.Trim();
 
-        // Keep previous UI constraint: up to 3 digits, each 0-7 (handled by UI), but parse here as decimal.
+        // 保持此前的 UI 限制：最多 3 位且每位为 0-7（UI 已限制），此处按十进制解析。
         if (!t.All(ch => ch >= '0' && ch <= '9')) return false;
 
         try
@@ -644,13 +644,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
     }
 
-    private static string FormatPermissionDigits(short mode)
-    {
-        // Return octal representation without leading sign, minimum 3 digits (owner/group/other), up to 4 if suid/sgid/sticky present
-        var oct = Convert.ToString(mode, 8);
-        if (oct.Length < 3) oct = oct.PadLeft(3, '0');
-        return oct;
-    }
 
     // ===== 权限输入限制：仅允许0-7三位，非法输入被拦截 =====
     private static bool IsValidPermissionDigits(string text)
@@ -718,7 +711,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 break;
             }
 
-            // Stop if we bubbled up to the grid
+            // 若冒泡回到 DataGrid 自身则停止
             if (ReferenceEquals(source, grid)) break;
             source = VisualTreeHelper.GetParent(source);
         }
@@ -813,7 +806,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             fc.Permission = normalized;
     }
 
-    // Models
+    // 数据模型
     public class ServerConfig : INotifyPropertyChanged
     {
         private string _alias = string.Empty;
