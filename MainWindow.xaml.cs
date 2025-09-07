@@ -725,6 +725,17 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
         if (!clickedOnRowOrCell)
         {
+            // 先提交正在编辑的单元格/行，从而退出编辑模式
+            try
+            {
+                grid.CommitEdit(DataGridEditingUnit.Cell, true);
+                grid.CommitEdit(DataGridEditingUnit.Row, true);
+            }
+            catch
+            {
+                // 忽略提交异常，继续清理选择与焦点
+            }
+
             grid.UnselectAll();
             grid.SelectedIndex = -1;
             // 清除焦点，避免出现编辑状态
