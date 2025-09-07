@@ -81,29 +81,7 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="Auto" MinWidth="120" />
                             <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
-                            <DataGridTemplateColumn Header="权限" Width="Auto" MinWidth="60">
-                                <DataGridTemplateColumn.CellStyle>
-                                    <Style TargetType="DataGridCell">
-                                        <EventSetter Event="PreviewMouseLeftButtonDown" Handler="OnPermissionCellPreviewMouseLeftButtonDown" />
-                                    </Style>
-                                </DataGridTemplateColumn.CellStyle>
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Permission}" HorizontalAlignment="Center" />
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                                <DataGridTemplateColumn.CellEditingTemplate>
-                                    <DataTemplate>
-                                        <TextBox Text="{Binding Permission, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                 MaxLength="3"
-                                                 HorizontalContentAlignment="Center"
-                                                 PreviewTextInput="OnPermissionPreviewTextInput"
-                                                 PreviewKeyDown="OnPermissionPreviewKeyDown"
-                                                 DataObject.Pasting="OnPermissionPasting"
-                                                 LostFocus="OnPermissionLostFocus" />
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellEditingTemplate>
-                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="权限" Binding="{Binding Permission, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="60" />
                         </DataGrid.Columns>
                     </DataGrid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
