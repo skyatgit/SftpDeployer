@@ -1,11 +1,976 @@
-﻿using Wpf.Ui.Controls;
+﻿using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.IO;
+using System.Text;
+using System.Text.Json;
+using System.Text.Encodings.Web;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Security.Cryptography;
+using Microsoft.Win32;
+using Renci.SshNet;
+using Renci.SshNet.Common;
+using Wpf.Ui.Controls;
 
 namespace WpfApp2;
 
-public partial class MainWindow : FluentWindow
+public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 {
+    // Persistence
+    private readonly string _configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WpfApp2");
+    private readonly string _configFile;
+
+    private bool _isUploading;
+
+    private string _logText = string.Empty;
+
+    private FileConfig? _selectedFile;
+    private bool _suspendAutoSave;
+
+    private double _uploadProgress;
+
+    private string _uploadStatus = string.Empty;
+
     public MainWindow()
     {
         InitializeComponent();
+        DataContext = this;
+
+        _configFile = Path.Combine(_configDir, "config.json");
+        Loaded += (_, __) => LoadConfig();
+
+        // Listen collection changes to keep selections in sync and auto-save
+        Servers.CollectionChanged += (s, args) =>
+        {
+            if (args?.NewItems != null)
+                foreach (var item in args.NewItems)
+                    if (item is ServerConfig sc)
+                        sc.PropertyChanged += (_, __) =>
+                        {
+                            SaveConfig();
+                            RecomputeCanUpload();
+                            RefreshAllFileServerSelections();
+                        };
+
+            RefreshAllFileServerSelections();
+            SaveConfig();
+        };
+
+        Files.CollectionChanged += (_, args) =>
+        {
+            if (args?.NewItems != null)
+                foreach (var item in args.NewItems)
+                    if (item is FileConfig f)
+                        SubscribeFile(f);
+
+            RecomputeCanUpload();
+            SaveConfig();
+        };
+    }
+
+    // Collections bound to UI
+    public ObservableCollection<ServerConfig> Servers { get; } = new();
+    public ObservableCollection<FileConfig> Files { get; } = new();
+
+    public FileConfig? SelectedFile
+    {
+        get => _selectedFile;
+        set
+        {
+            _selectedFile = value;
+            OnPropertyChanged(nameof(SelectedFile));
+        }
+    }
+
+    public string LogText
+    {
+        get => _logText;
+        set
+        {
+            _logText = value;
+            OnPropertyChanged(nameof(LogText));
+        }
+    }
+
+    public double UploadProgress
+    {
+        get => _uploadProgress;
+        set
+        {
+            _uploadProgress = value;
+            OnPropertyChanged(nameof(UploadProgress));
+        }
+    }
+
+    public string UploadStatus
+    {
+        get => _uploadStatus;
+        set
+        {
+            _uploadStatus = value;
+            OnPropertyChanged(nameof(UploadStatus));
+        }
+    }
+
+    public bool CanUpload => !_isUploading && Files.Any(f => f.IsSelected);
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void SubscribeFile(FileConfig file)
+    {
+        file.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(FileConfig.IsSelected) || e.PropertyName == nameof(FileConfig.TargetPath) || e.PropertyName == nameof(FileConfig.Permission))
+            {
+                RecomputeCanUpload();
+                SaveConfig();
+            }
+        };
+        foreach (var sel in file.ServerSelections)
+            sel.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(ServerSelection.IsSelected))
+                {
+                    // 更新是否存在已选服务器的状态
+                    file.HasAnyServerSelected = file.ServerSelections.Any(s => s.IsSelected);
+                    // 若该文件的服务器列表全部被取消勾选，则自动取消该文件的勾选
+                    if (!file.HasAnyServerSelected) file.IsSelected = false;
+                    RecomputeCanUpload();
+                    SaveConfig();
+                }
+            };
+    }
+
+    private void OnPropertyChanged(string name)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        if (name == nameof(Servers) || name == nameof(Files))
+            RefreshAllFileServerSelections();
+        if (name == nameof(SelectedFile))
+            RecomputeCanUpload();
+    }
+
+    private void RefreshAllFileServerSelections()
+    {
+        foreach (var file in Files)
+        {
+            var existing = file.ServerSelections.ToDictionary(s => s.Alias, s => s.IsSelected);
+            file.ServerSelections = new ObservableCollection<ServerSelection>(
+                Servers
+                    .OrderBy(s => s.Alias, StringComparer.CurrentCultureIgnoreCase)
+                    .Select(s => new ServerSelection
+                    {
+                        Alias = s.Alias,
+                        // 对已有文件，新增加的服务器默认选中（全选默认）
+                        IsSelected = existing.TryGetValue(s.Alias, out var sel) ? sel : true
+                    })
+            );
+            // 更新是否存在已选服务器
+            file.HasAnyServerSelected = file.ServerSelections.Any(s => s.IsSelected);
+            // 若刷新后没有任何服务器被选中，则取消勾选该文件
+            if (!file.HasAnyServerSelected) file.IsSelected = false;
+            AttachSelectionHandlers(file);
+        }
+
+        RecomputeCanUpload();
+    }
+
+    private void AttachSelectionHandlers(FileConfig file)
+    {
+        foreach (var sel in file.ServerSelections)
+            sel.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(ServerSelection.IsSelected))
+                {
+                    file.HasAnyServerSelected = file.ServerSelections.Any(s => s.IsSelected);
+                    if (!file.HasAnyServerSelected) file.IsSelected = false;
+                    RecomputeCanUpload();
+                    SaveConfig();
+                }
+            };
+    }
+
+    private void AppendLog(string message)
+    {
+        LogText += (LogText.Length > 0 ? Environment.NewLine : string.Empty) + message;
+    }
+
+    // Button handlers
+    private void OnAddFileClick(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择要上传的文件",
+            Multiselect = true
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            foreach (var path in dlg.FileNames)
+            {
+                var file = new FileConfig
+                {
+                    LocalPath = path,
+                    TargetPath = "/" + Path.GetFileName(path),
+                    IsSelected = true
+                };
+                // initialize selections mirroring current servers (默认全选)
+                file.ServerSelections = new ObservableCollection<ServerSelection>(
+                    Servers
+                        .OrderBy(s => s.Alias, StringComparer.CurrentCultureIgnoreCase)
+                        .Select(s => new ServerSelection { Alias = s.Alias, IsSelected = true })
+                );
+                file.HasAnyServerSelected = file.ServerSelections.Any(s => s.IsSelected);
+                if (!file.HasAnyServerSelected) file.IsSelected = false;
+                Files.Add(file);
+                SelectedFile = file;
+            }
+
+            RecomputeCanUpload();
+        }
+    }
+
+    private void OnRemoveFileClick(object sender, RoutedEventArgs e)
+    {
+        // 仅删除文件配置页 DataGrid 中选中的行；若未选择则不删除
+        var selectedItems = FilesGrid?.SelectedItems;
+        if (selectedItems == null || selectedItems.Count == 0)
+        {
+            return; // 未选择任何行，不执行删除
+        }
+
+        // 收集要删除的 FileConfig 项
+        var toRemove = new List<FileConfig>();
+        foreach (var item in selectedItems)
+        {
+            if (item is FileConfig fc)
+                toRemove.Add(fc);
+        }
+        if (toRemove.Count == 0) return;
+
+        foreach (var f in toRemove.ToList())
+        {
+            Files.Remove(f);
+        }
+
+        // 更新选中项
+        SelectedFile = Files.FirstOrDefault();
+        RecomputeCanUpload();
+        SaveConfig();
+    }
+
+    private void OnAddServerClick(object sender, RoutedEventArgs e)
+    {
+        var server = new ServerConfig { Alias = $"服务器{Servers.Count + 1}", Host = "", Username = "", Password = "", Port = 22 };
+        Servers.Add(server);
+        RefreshAllFileServerSelections();
+    }
+
+    private void OnRemoveServerClick(object sender, RoutedEventArgs e)
+    {
+        // 仅删除服务器配置页 DataGrid 中选中的行；若未选择则不删除
+        var selectedItems = ServersGrid?.SelectedItems;
+        if (selectedItems == null || selectedItems.Count == 0)
+        {
+            return; // 未选择任何行，不执行删除
+        }
+
+        var toRemove = new List<ServerConfig>();
+        foreach (var item in selectedItems)
+        {
+            if (item is ServerConfig sc)
+                toRemove.Add(sc);
+        }
+        if (toRemove.Count == 0) return;
+
+        foreach (var s in toRemove.ToList())
+        {
+            Servers.Remove(s);
+        }
+
+        // 清空选择，避免自动选中最后一行
+        ServersGrid.SelectedIndex = -1;
+        RefreshAllFileServerSelections();
+        SaveConfig();
+    }
+
+    private async void OnUploadClick(object sender, RoutedEventArgs e)
+    {
+        _isUploading = true;
+        OnPropertyChanged(nameof(CanUpload));
+        UploadStatus = "正在上传...";
+        UploadProgress = 0;
+        LogText = string.Empty;
+
+        try
+        {
+            // Gather tasks
+            var jobs = (from f in Files.Where(f => f.IsSelected)
+                let fileInfo = new FileInfo(f.LocalPath)
+                where fileInfo.Exists
+                from sel in f.ServerSelections.Where(s => s.IsSelected)
+                join srv in Servers on sel.Alias equals srv.Alias
+                select new { File = f, Server = srv, FileInfo = fileInfo }).ToList();
+
+            if (jobs.Count == 0)
+            {
+                AppendLog("未选择需要上传的文件或服务器。");
+                return;
+            }
+
+            var totalBytes = jobs.Sum(j => j.FileInfo.Length);
+            if (totalBytes == 0) totalBytes = 1;
+            long uploadedBytes = 0;
+            int successCount = 0;
+            int failCount = 0;
+
+            foreach (var job in jobs)
+            {
+                AppendLog($"开始上传：{job.File.LocalPath} -> {job.Server.Alias} ({job.Server.Host}):{job.File.TargetPath}");
+
+                try
+                {
+                    bool skipped = false;
+                    bool permApplied = false;
+                    string? permError = null;
+                    string? appliedPermDigits = null;
+                    await Task.Run(() =>
+                    {
+                        var connectionInfo = new ConnectionInfo(job.Server.Host, job.Server.Port, job.Server.Username,
+                            new PasswordAuthenticationMethod(job.Server.Username, job.Server.Password))
+                        {
+                            Encoding = Encoding.UTF8
+                        };
+                        using var sftp = new SftpClient(connectionInfo);
+                        sftp.Connect();
+
+                        var remotePath = job.File.TargetPath.Replace("\\", "/");
+
+                        // 计算本地文件哈希
+                        string localHash;
+                        using (var lfs = File.OpenRead(job.File.LocalPath))
+                            localHash = ComputeSha256Hex(lfs);
+
+                        // 若远端存在文件，则计算其哈希（失败则忽略，继续上传）
+                        try
+                        {
+                            if (sftp.Exists(remotePath))
+                            {
+                                using var rfs = sftp.OpenRead(remotePath);
+                                var remoteHash = ComputeSha256Hex(rfs);
+                                if (string.Equals(localHash, remoteHash, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    // 相同则跳过上传，但若设置了权限仍需应用
+                                    if (TryParsePermissionOctal(job.File.Permission, out var mode))
+                                    {
+                                        try { sftp.ChangePermissions(remotePath, mode); permApplied = true; appliedPermDigits = job.File.Permission; }
+                                        catch (Exception exPerm) { permError = ToChineseError(exPerm); }
+                                    }
+                                    skipped = true;
+                                    sftp.Disconnect();
+                                    return;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // 无权限或其他原因导致读取远端文件失败，视为需要上传
+                        }
+
+                        // 需要上传时，确保目录存在
+                        var remoteDir = Path.GetDirectoryName(remotePath)?.Replace("\\", "/") ?? "/";
+                        CreateRemoteDirectoriesSafe(sftp, remoteDir);
+
+                        // 使用临时文件上传，然后原子替换，避免直接覆盖失败
+                        var tempPath = (remoteDir.EndsWith("/") ? remoteDir : remoteDir + "/") + ".uploading_" + Guid.NewGuid().ToString("N");
+                        using (var ufs = File.OpenRead(job.File.LocalPath))
+                        {
+                            sftp.UploadFile(ufs, tempPath, true, uploaded =>
+                            {
+                                var current = uploadedBytes + (long)uploaded;
+                                var percent = Math.Min(100.0, current * 100.0 / totalBytes);
+                                Dispatcher.Invoke(() => UploadProgress = percent);
+                            });
+                        }
+
+                        // 尝试删除旧文件后重命名临时文件为目标
+                        try
+                        {
+                            if (sftp.Exists(remotePath))
+                            {
+                                try { sftp.DeleteFile(remotePath); } catch { /* 忽略删除失败，继续尝试改名覆盖 */ }
+                            }
+                            sftp.RenameFile(tempPath, remotePath);
+                        }
+                        catch
+                        {
+                            // 回退策略：若改名失败，尝试直接覆盖上传
+                            using var ufs2 = File.OpenRead(job.File.LocalPath);
+                            sftp.UploadFile(ufs2, remotePath, true);
+                            // 尝试清理临时文件
+                            try { if (sftp.Exists(tempPath)) sftp.DeleteFile(tempPath); } catch { }
+                        }
+
+                        // 上传完成后应用权限（如果提供）
+                        if (TryParsePermissionOctal(job.File.Permission, out var mode2))
+                        {
+                            try { sftp.ChangePermissions(remotePath, mode2); permApplied = true; appliedPermDigits = job.File.Permission; }
+                            catch (Exception exPerm) { permError = ToChineseError(exPerm); }
+                        }
+
+                        sftp.Disconnect();
+                    });
+
+                    successCount++;
+                    if (skipped)
+                        AppendLog($"[{job.Server.Alias}] 已是最新，无需更新。");
+                    else
+                        AppendLog($"[{job.Server.Alias}] 上传成功。");
+                    if (!string.IsNullOrWhiteSpace(job.File.Permission))
+                    {
+                        if (permApplied)
+                        {
+                            AppendLog($"[{job.Server.Alias}] 已设置权限：{appliedPermDigits ?? job.File.Permission}");
+                        }
+                        else if (permError != null)
+                        {
+                            AppendLog($"[{job.Server.Alias}] 设置权限失败：{permError}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failCount++;
+                    AppendLog($"[{job.Server.Alias}] 上传失败：" + ToChineseError(ex));
+                }
+                finally
+                {
+                    // Advance global progress by the full size of this job, even on failure
+                    uploadedBytes += job.FileInfo.Length;
+                    var percent = Math.Min(100.0, uploadedBytes * 100.0 / totalBytes);
+                    UploadStatus = $"已完成：{Math.Round(percent, 1)}%";
+                    UploadProgress = percent;
+                }
+            }
+
+            // Final status summary
+            if (failCount == 0)
+            {
+                UploadProgress = 100;
+                UploadStatus = "全部上传完成";
+            }
+            else if (successCount == 0)
+            {
+                UploadStatus = $"全部失败（0/{jobs.Count} 成功）";
+            }
+            else
+            {
+                UploadStatus = $"已完成 {successCount}/{jobs.Count}，部分失败";
+            }
+        }
+        finally
+        {
+            _isUploading = false;
+            OnPropertyChanged(nameof(CanUpload));
+        }
+    }
+
+    private static string ToChineseError(Exception ex)
+    {
+        // 简单的中文错误转换/直出
+        if (ex is SshAuthenticationException)
+            return "认证失败，请检查用户名或密码。";
+        if (ex is SshConnectionException)
+            return "无法连接到服务器，请检查IP/主机和网络。";
+        if (ex is IOException)
+            return "文件读写失败，请检查本地文件路径与权限。";
+        return ex.Message;
+    }
+
+    private static void CreateRemoteDirectoriesSafe(SftpClient sftp, string remoteDir)
+    {
+        if (string.IsNullOrWhiteSpace(remoteDir)) return;
+        var parts = remoteDir.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        var current = "/";
+        foreach (var part in parts)
+        {
+            current = current.EndsWith("/") ? current + part : current + "/" + part;
+            try
+            {
+                if (!sftp.Exists(current))
+                    sftp.CreateDirectory(current);
+            }
+            catch
+            {
+                // ignore create errors (may exist or no permission)
+            }
+        }
+    }
+
+    private void SaveConfig()
+    {
+        try
+        {
+            if (_suspendAutoSave) return;
+            Directory.CreateDirectory(_configDir);
+            var data = new ConfigData
+            {
+                Servers = Servers.Select(s => new ServerConfig
+                {
+                    Alias = s.Alias,
+                    Host = s.Host,
+                    Username = s.Username,
+                    Password = s.Password,
+                    Port = s.Port
+                }).ToList(),
+                Files = Files.Select(f => new FileConfigDTO
+                {
+                    LocalPath = f.LocalPath,
+                    TargetPath = f.TargetPath,
+                    Permission = string.IsNullOrWhiteSpace(f.Permission) ? null : f.Permission,
+                    IsSelected = f.IsSelected,
+                    SelectedServerAliases = f.ServerSelections.Where(ss => ss.IsSelected).Select(ss => ss.Alias).ToList()
+                }).ToList()
+            };
+            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            File.WriteAllText(_configFile, json, Encoding.UTF8);
+        }
+        catch
+        {
+            // ignore persistence errors silently
+        }
+    }
+
+    private void LoadConfig()
+    {
+        try
+        {
+            _suspendAutoSave = true;
+            if (!File.Exists(_configFile)) return;
+            var json = File.ReadAllText(_configFile, Encoding.UTF8);
+            var data = JsonSerializer.Deserialize<ConfigData>(json);
+            if (data == null) return;
+
+            Servers.Clear();
+            foreach (var s in data.Servers)
+                Servers.Add(new ServerConfig
+                {
+                    Alias = s.Alias,
+                    Host = s.Host,
+                    Username = s.Username,
+                    Password = s.Password,
+                    Port = s.Port == 0 ? 22 : s.Port
+                });
+
+            Files.Clear();
+            foreach (var f in data.Files)
+            {
+                var fc = new FileConfig
+                {
+                    LocalPath = f.LocalPath,
+                    TargetPath = f.TargetPath,
+                    Permission = f.Permission ?? string.Empty,
+                    IsSelected = f.IsSelected
+                };
+                var selected = new HashSet<string>(f.SelectedServerAliases ?? new List<string>());
+                fc.ServerSelections = new ObservableCollection<ServerSelection>(
+                    Servers
+                        .OrderBy(s => s.Alias, StringComparer.CurrentCultureIgnoreCase)
+                        .Select(s => new ServerSelection
+                        {
+                            Alias = s.Alias,
+                            IsSelected = selected.Contains(s.Alias)
+                        })
+                );
+                fc.HasAnyServerSelected = fc.ServerSelections.Any(s => s.IsSelected);
+                Files.Add(fc);
+            }
+
+            SelectedFile = Files.FirstOrDefault();
+        }
+        catch
+        {
+            // ignore loading errors
+        }
+        finally
+        {
+            _suspendAutoSave = false;
+            RefreshAllFileServerSelections();
+            RecomputeCanUpload();
+        }
+    }
+
+    private void RecomputeCanUpload()
+    {
+        OnPropertyChanged(nameof(CanUpload));
+    }
+
+    // Models
+    public class ServerConfig : INotifyPropertyChanged
+    {
+        private string _alias = string.Empty;
+        private string _host = string.Empty;
+        private string _password = string.Empty;
+        private string _username = string.Empty;
+        private int _port = 22;
+
+        public string Alias
+        {
+            get => _alias;
+            set
+            {
+                _alias = value;
+                OnPropertyChanged(nameof(Alias));
+            }
+        }
+
+        public string Host
+        {
+            get => _host;
+            set
+            {
+                _host = value;
+                OnPropertyChanged(nameof(Host));
+            }
+        }
+
+        public int Port
+        {
+            get => _port;
+            set
+            {
+                _port = value;
+                OnPropertyChanged(nameof(Port));
+            }
+        }
+
+        public string Username
+        {
+            get => _username;
+            set
+            {
+                _username = value;
+                OnPropertyChanged(nameof(Username));
+            }
+        }
+
+        public string Password
+        {
+            get => _password;
+            set
+            {
+                _password = value;
+                OnPropertyChanged(nameof(Password));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        protected void OnPropertyChanged(string name)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+
+        public bool IsValid()
+        {
+            return !string.IsNullOrWhiteSpace(Alias) && !string.IsNullOrWhiteSpace(Host) && !string.IsNullOrWhiteSpace(Username);
+        }
+    }
+
+    public class ServerSelection : INotifyPropertyChanged
+    {
+        private bool _isSelected;
+        public string Alias { get; set; } = string.Empty;
+
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                _isSelected = value;
+                OnPropertyChanged(nameof(IsSelected));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        protected void OnPropertyChanged(string name)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
+
+    public class FileConfig : INotifyPropertyChanged
+    {
+        private bool _hasAnyServerSelected;
+        private bool _isSelected;
+        private string _localPath = string.Empty;
+        private ObservableCollection<ServerSelection> _serverSelections = new();
+        private string _targetPath = string.Empty;
+        private string _permission = string.Empty;
+
+        public string LocalPath
+        {
+            get => _localPath;
+            set
+            {
+                _localPath = value;
+                OnPropertyChanged(nameof(LocalPath));
+            }
+        }
+
+        public string TargetPath
+        {
+            get => _targetPath;
+            set
+            {
+                _targetPath = value;
+                OnPropertyChanged(nameof(TargetPath));
+            }
+        }
+
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                _isSelected = value;
+                OnPropertyChanged(nameof(IsSelected));
+            }
+        }
+
+        public ObservableCollection<ServerSelection> ServerSelections
+        {
+            get => _serverSelections;
+            set
+            {
+                _serverSelections = value;
+                OnPropertyChanged(nameof(ServerSelections));
+            }
+        }
+
+        public string Permission
+        {
+            get => _permission;
+            set
+            {
+                _permission = value;
+                OnPropertyChanged(nameof(Permission));
+            }
+        }
+
+        public bool HasAnyServerSelected
+        {
+            get => _hasAnyServerSelected;
+            set
+            {
+                _hasAnyServerSelected = value;
+                OnPropertyChanged(nameof(HasAnyServerSelected));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        protected void OnPropertyChanged(string name)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
+
+    // ===================== Persistence =====================
+    private class FileConfigDTO
+    {
+        public string LocalPath { get; set; } = string.Empty;
+        public string TargetPath { get; set; } = string.Empty;
+        public string? Permission { get; set; }
+        public bool IsSelected { get; set; }
+        public List<string> SelectedServerAliases { get; set; } = new();
+    }
+
+    private class ConfigData
+    {
+        public List<ServerConfig> Servers { get; set; } = new();
+        public List<FileConfigDTO> Files { get; set; } = new();
+    }
+
+    private static string ComputeSha256Hex(Stream stream)
+    {
+        using var sha = SHA256.Create();
+        var hash = sha.ComputeHash(stream);
+        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+    }
+
+    private static bool TryParsePermissionOctal(string? text, out short mode)
+    {
+        // As required: do NOT convert bases. Treat the user input as the actual numeric value to apply.
+        // Allow empty => return false (means: do not set permissions).
+        mode = 0;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.Trim();
+
+        // Keep previous UI constraint: up to 3 digits, each 0-7 (handled by UI), but parse here as decimal.
+        if (!t.All(ch => ch >= '0' && ch <= '9')) return false;
+
+        try
+        {
+            var val = Convert.ToInt32(t, 10);
+            if (val < 0 || val > 0xFFF) return false;
+            mode = (short)val;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string FormatPermissionDigits(short mode)
+    {
+        // Return octal representation without leading sign, minimum 3 digits (owner/group/other), up to 4 if suid/sgid/sticky present
+        var oct = Convert.ToString(mode, 8);
+        if (oct.Length < 3) oct = oct.PadLeft(3, '0');
+        return oct;
+    }
+
+    // ===== 权限输入限制：仅允许0-7三位，非法输入被拦截 =====
+    private static bool IsValidPermissionDigits(string text)
+    {
+        if (text is null) return false;
+        if (text.Length == 0) return true; // 允许为空
+        foreach (var ch in text)
+        {
+            if (ch < '0' || ch > '7') return false;
+        }
+        return text.Length <= 3;
+    }
+
+    private static string ComposeNewText(System.Windows.Controls.TextBox tb, string incoming)
+    {
+        var start = tb.SelectionStart;
+        var len = tb.SelectionLength;
+        var current = tb.Text ?? string.Empty;
+        if (start < 0 || start > current.Length) start = current.Length;
+        if (len < 0 || start + len > current.Length) len = Math.Max(0, current.Length - start);
+        var afterRemoval = current.Remove(start, len);
+        return afterRemoval.Insert(start, incoming ?? string.Empty);
+    }
+
+    private void OnPermissionPreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.TextBox tb) return;
+        var proposed = ComposeNewText(tb, e.Text);
+        if (!IsValidPermissionDigits(proposed))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void OnPermissionPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        // 允许常用控制键与导航键
+        if (e.Key == Key.Back || e.Key == Key.Delete || e.Key == Key.Tab ||
+            e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Home || e.Key == Key.End)
+        {
+            return;
+        }
+        if (e.Key == Key.Space)
+        {
+            e.Handled = true; // 禁止空格
+            return;
+        }
+        // 其它按键由 PreviewTextInput 决定；此处不额外处理
+    }
+
+    private void OnPermissionPasting(object sender, DataObjectPastingEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.TextBox tb)
+        {
+            return;
+        }
+        if (!e.SourceDataObject.GetDataPresent(DataFormats.UnicodeText))
+        {
+            e.CancelCommand();
+            return;
+        }
+        var pasteText = e.SourceDataObject.GetData(DataFormats.UnicodeText) as string ?? string.Empty;
+        var proposed = ComposeNewText(tb, pasteText);
+        if (!IsValidPermissionDigits(proposed))
+        {
+            e.CancelCommand();
+        }
+    }
+
+    private void OnDataGridPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.DataGrid grid) return;
+        var source = e.OriginalSource as DependencyObject;
+        bool clickedOnRowOrCell = false;
+        while (source != null)
+        {
+            if (source is System.Windows.Controls.DataGridRow || source is System.Windows.Controls.DataGridCell)
+            {
+                clickedOnRowOrCell = true;
+                break;
+            }
+            // Stop if we bubbled up to the grid
+            if (ReferenceEquals(source, grid)) break;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        if (!clickedOnRowOrCell)
+        {
+            grid.UnselectAll();
+            grid.SelectedIndex = -1;
+            // 清除焦点，避免出现编辑状态
+            FocusManager.SetFocusedElement(FocusManager.GetFocusScope(grid), null);
+            Keyboard.ClearFocus();
+        }
+    }
+
+    // 单击“权限”单元格直接进入编辑并聚焦到 TextBox
+    private void OnPermissionCellPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGridCell cell) return;
+        if (cell.IsEditing) return;
+        e.Handled = true;
+        cell.Focus();
+        var row = FindVisualParent<DataGridRow>(cell);
+        if (row == null) return;
+        // 选中当前行并设置当前单元格
+        FilesGrid.SelectedItem = row.Item;
+        FilesGrid.CurrentCell = new DataGridCellInfo(row.Item, cell.Column);
+        FilesGrid.BeginEdit();
+        // 聚焦到编辑框
+        var tb = FindVisualChild<System.Windows.Controls.TextBox>(cell);
+        if (tb != null)
+        {
+            tb.Focus();
+            tb.CaretIndex = tb.Text?.Length ?? 0;
+        }
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject child) where T : DependencyObject
+    {
+        var parent = VisualTreeHelper.GetParent(child);
+        while (parent != null)
+        {
+            if (parent is T t) return t;
+            parent = VisualTreeHelper.GetParent(parent);
+        }
+        return null;
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        if (parent == null) return null;
+        var count = VisualTreeHelper.GetChildrenCount(parent);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T tChild) return tChild;
+            var result = FindVisualChild<T>(child);
+            if (result != null) return result;
+        }
+        return null;
     }
 }
