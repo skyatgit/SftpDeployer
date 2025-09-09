@@ -84,7 +84,7 @@
                             <TextBlock Text="{Binding UploadStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
                         </StackPanel>
                         <GroupBox Header="日志" MinHeight="60">
-                            <TextBox Text="{Binding LogText}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" />
+                            <RichTextBox x:Name="LogRichBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto" />
                         </GroupBox>
                     </DockPanel>
                 </Grid>
@@ -117,6 +117,13 @@
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="脚本" Width="Auto" MinWidth="60">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="编辑" Width="80" Click="OnEditScriptClick" />
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>

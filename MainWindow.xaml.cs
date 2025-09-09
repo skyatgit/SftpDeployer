@@ -15,6 +15,11 @@ using Renci.SshNet.Common;
 using Wpf.Ui.Controls;
 using DataGrid = System.Windows.Controls.DataGrid;
 using TextBox = System.Windows.Controls.TextBox;
+using System.Diagnostics;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
+using System.Windows.Documents;
+using System.Windows.Media;
 
 namespace SftpDeployer;
 
@@ -129,7 +134,10 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         file.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(FileConfig.IsSelected) || e.PropertyName == nameof(FileConfig.TargetPath) || e.PropertyName == nameof(FileConfig.Permission))
+            if (e.PropertyName == nameof(FileConfig.IsSelected) ||
+                e.PropertyName == nameof(FileConfig.TargetPath) ||
+                e.PropertyName == nameof(FileConfig.Permission) ||
+                e.PropertyName == nameof(FileConfig.ScriptYaml))
             {
                 RecomputeCanUpload();
                 SaveConfig();
@@ -242,12 +250,73 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         AttachHomeSelectionHandlers(file);
     }
 
+    private void AppendParagraph(string text, Brush brush)
+    {
+        try
+        {
+            var run = new Run(text) { Foreground = brush };
+            var p = new Paragraph(run) { Margin = new System.Windows.Thickness(0) };
+            if (LogRichBox != null)
+            {
+                if (LogRichBox.Document == null)
+                    LogRichBox.Document = new FlowDocument();
+                LogRichBox.Document.Blocks.Add(p);
+                LogRichBox.ScrollToEnd();
+            }
+        }
+        catch { }
+    }
+
     private void AppendLog(string message)
     {
-        LogText += (LogText.Length > 0 ? Environment.NewLine : string.Empty) + message;
+        AppendParagraph(message, Brushes.Black);
+    }
+
+    private void AppendParsedLog(string line)
+    {
+        if (line != null && line.StartsWith("[[CMD]]"))
+        {
+            var txt = line.Length > 7 ? line.Substring(7) : string.Empty;
+            AppendParagraph(txt, Brushes.Green);
+            return;
+        }
+        if (line != null && line.StartsWith("[[RES]]"))
+        {
+            var txt = line.Length > 7 ? line.Substring(7) : string.Empty;
+            AppendParagraph(txt, Brushes.Gray);
+            return;
+        }
+        AppendLog(line ?? string.Empty);
+    }
+
+    private void ClearLog()
+    {
+        try
+        {
+            if (LogRichBox != null)
+            {
+                LogRichBox.Document = new FlowDocument();
+                LogRichBox.ScrollToHome();
+            }
+            LogText = string.Empty;
+        }
+        catch { }
     }
 
     // 按钮事件
+    private void OnEditScriptClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn) return;
+        if (btn.DataContext is not FileConfig fc) return;
+        var win = new ScriptEditorWindow(fc.ScriptYaml) { Owner = this };
+        var res = win.ShowDialog();
+        if (res == true)
+        {
+            fc.ScriptYaml = win.EditedText;
+            SaveConfig();
+        }
+    }
+
     private void OnAddFileClick(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
@@ -335,7 +404,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         OnPropertyChanged(nameof(CanUpload));
         UploadStatus = "正在上传...";
         UploadProgress = 0;
-        LogText = string.Empty;
+        ClearLog();
 
         try
         {
@@ -361,8 +430,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
             foreach (var job in jobs)
             {
-                AppendLog($"开始上传：{job.File.LocalPath} -> {job.Server.Alias} ({job.Server.Host}):{job.File.TargetPath}");
 
+                var scriptLogs = new List<string>();
                 try
                 {
                     var skipped = false;
@@ -371,15 +440,47 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     string? appliedPermDigits = null;
                     await Task.Run(() =>
                     {
+                        var remotePath = job.File.TargetPath.Replace("\\", "/");
+
+                        // 解析脚本并准备变量
+                        var (script, parseError) = TryParseScriptYaml(job.File.ScriptYaml);
+                        var hasYaml = !string.IsNullOrWhiteSpace(job.File.ScriptYaml);
+                        var vars = BuildScriptVariables(job.File, job.Server, remotePath);
+
                         var connectionInfo = new ConnectionInfo(job.Server.Host, job.Server.Port, job.Server.Username,
                             new PasswordAuthenticationMethod(job.Server.Username, job.Server.Password))
                         {
                             Encoding = Encoding.UTF8
                         };
+
+                        using var ssh = new SshClient(connectionInfo);
+                        ssh.Connect();
+                        // 上传前脚本：在远程服务器上通过 SSH 执行
+                        bool parseErrorLogged = false;
+                        if (script?.BeforeScript != null && script.BeforeScript.Count > 0)
+                        {
+                            if (!ExecuteStepsRemote(ssh, script.BeforeScript, vars, scriptLogs, $"[{job.Server.Alias}] [before]", line => Dispatcher.Invoke(() => AppendParsedLog(line))))
+                                throw new Exception("预处理脚本失败");
+                        }
+                        else
+                        {
+                            // 未设置前置脚本时提示；若 YAML 解析失败则输出解析错误
+                            if (hasYaml && !string.IsNullOrWhiteSpace(parseError))
+                            {
+                                Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] 脚本解析失败：{parseError}（不执行任何脚本）"));
+                                parseErrorLogged = true;
+                            }
+                            else
+                            {
+                                Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] [before] 未检测到 before_script（不执行）"));
+                            }
+                        }
+
+                        // 在执行 SFTP 操作前输出开始上传日志（紧跟在 before_script 之后）
+                        Dispatcher.Invoke(() => AppendLog($"开始上传：{job.File.LocalPath} -> {job.Server.Alias} ({job.Server.Host}):{job.File.TargetPath}"));
+
                         using var sftp = new SftpClient(connectionInfo);
                         sftp.Connect();
-
-                        var remotePath = job.File.TargetPath.Replace("\\", "/");
 
                         // 计算本地文件哈希
                         string localHash;
@@ -412,6 +513,37 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
                                     skipped = true;
                                     sftp.Disconnect();
+
+                                    // 在执行 after_script 之前，输出“已是最新”和权限结果
+                                    Dispatcher.Invoke(() =>
+                                    {
+                                        AppendLog($"[{job.Server.Alias}] 已是最新，无需更新。");
+                                        if (!string.IsNullOrWhiteSpace(job.File.Permission))
+                                        {
+                                            if (permApplied)
+                                                AppendLog($"[{job.Server.Alias}] 已设置权限：{appliedPermDigits ?? job.File.Permission}");
+                                            else if (permError != null)
+                                                AppendLog($"[{job.Server.Alias}] 设置权限失败：{permError}");
+                                        }
+                                    });
+
+                                    // 执行上传后脚本（即使未发生上传也执行）
+                                    if (script?.AfterScript != null && script.AfterScript.Count > 0)
+                                    {
+                                        ExecuteStepsRemote(ssh, script.AfterScript, vars, scriptLogs, $"[{job.Server.Alias}] [after]", line => Dispatcher.Invoke(() => AppendParsedLog(line)));
+                                    }
+                                    else
+                                    {
+                                        if (hasYaml && !string.IsNullOrWhiteSpace(parseError) && !parseErrorLogged)
+                                        {
+                                            Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] 脚本解析失败：{parseError}（不执行任何脚本）"));
+                                            parseErrorLogged = true;
+                                        }
+                                        else
+                                        {
+                                            Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] [after] 未检测到 after_script（不执行）"));
+                                        }
+                                    }
                                     return;
                                 }
                             }
@@ -481,19 +613,43 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                             }
 
                         sftp.Disconnect();
+
+                        // 在执行 after_script 之前，输出“上传成功”和权限结果
+                        Dispatcher.Invoke(() =>
+                        {
+                            AppendLog($"[{job.Server.Alias}] 上传成功。");
+                            if (!string.IsNullOrWhiteSpace(job.File.Permission))
+                            {
+                                if (permApplied)
+                                    AppendLog($"[{job.Server.Alias}] 已设置权限：{appliedPermDigits ?? job.File.Permission}");
+                                else if (permError != null)
+                                    AppendLog($"[{job.Server.Alias}] 设置权限失败：{permError}");
+                            }
+                        });
+
+                        // 执行上传后脚本（远程 SSH）
+                        if (script?.AfterScript != null && script.AfterScript.Count > 0)
+                        {
+                            ExecuteStepsRemote(ssh, script.AfterScript, vars, scriptLogs, $"[{job.Server.Alias}] [after]", line => Dispatcher.Invoke(() => AppendParsedLog(line)));
+                        }
+                        else
+                        {
+                            if (hasYaml && !string.IsNullOrWhiteSpace(parseError) && !parseErrorLogged)
+                            {
+                                Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] 脚本解析失败：{parseError}（不执行任何脚本）"));
+                                parseErrorLogged = true;
+                            }
+                            else
+                            {
+                                Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] [after] 未检测到 after_script（不执行）"));
+                            }
+                        }
+
+                        // 断开 SSH
+                        try { ssh.Disconnect(); } catch { }
                     });
 
                     successCount++;
-                    if (skipped)
-                        AppendLog($"[{job.Server.Alias}] 已是最新，无需更新。");
-                    else
-                        AppendLog($"[{job.Server.Alias}] 上传成功。");
-                    if (!string.IsNullOrWhiteSpace(job.File.Permission))
-                    {
-                        if (permApplied)
-                            AppendLog($"[{job.Server.Alias}] 已设置权限：{appliedPermDigits ?? job.File.Permission}");
-                        else if (permError != null) AppendLog($"[{job.Server.Alias}] 设置权限失败：{permError}");
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -634,7 +790,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     Permission = string.IsNullOrWhiteSpace(f.Permission) ? null : f.Permission,
                     IsSelected = f.IsSelected,
                     SelectedServerAliases = f.ServerSelections.Where(ss => ss.IsSelected).Select(ss => ss.Alias).ToList(),
-                    HomeSelectedServerAliases = f.HomeServerSelections.Where(hs => hs.IsSelected).Select(hs => hs.Alias).ToList()
+                    HomeSelectedServerAliases = f.HomeServerSelections.Where(hs => hs.IsSelected).Select(hs => hs.Alias).ToList(),
+                    ScriptYaml = string.IsNullOrWhiteSpace(f.ScriptYaml) ? null : f.ScriptYaml
                 }).ToList(),
                 WindowWidth = saveWidth,
                 WindowHeight = saveHeight,
@@ -699,7 +856,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     LocalPath = f.LocalPath,
                     TargetPath = f.TargetPath,
                     Permission = f.Permission ?? string.Empty,
-                    IsSelected = f.IsSelected
+                    IsSelected = f.IsSelected,
+                    ScriptYaml = f.ScriptYaml ?? string.Empty
                 };
                 var selected = new HashSet<string>(f.SelectedServerAliases ?? new List<string>());
                 fc.ServerSelections = new ObservableCollection<ServerSelection>(
@@ -1043,6 +1201,218 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         return row?.Item as TItem;
     }
 
+    // ===== 脚本解析与执行 =====
+    private class FileScript
+    {
+        public List<string>? BeforeScript { get; set; }
+        public List<string>? AfterScript { get; set; }
+    }
+
+    private static FileScript? ParseScriptYaml(string? yaml)
+    {
+        if (string.IsNullOrWhiteSpace(yaml)) return null;
+        try
+        {
+            var deserializer = new DeserializerBuilder()
+                .WithNamingConvention(UnderscoredNamingConvention.Instance)
+                .IgnoreUnmatchedProperties()
+                .Build();
+            var script = deserializer.Deserialize<FileScript>(yaml);
+            return script;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static (FileScript? script, string? error) TryParseScriptYaml(string? yaml)
+    {
+        if (string.IsNullOrWhiteSpace(yaml)) return (null, null);
+        try
+        {
+            var deserializer = new DeserializerBuilder()
+                .WithNamingConvention(UnderscoredNamingConvention.Instance)
+                .IgnoreUnmatchedProperties()
+                .Build();
+            var script = deserializer.Deserialize<FileScript>(yaml);
+            return (script, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, ex.Message);
+        }
+    }
+
+    private static Dictionary<string, string> BuildScriptVariables(FileConfig file, ServerConfig server, string remotePath)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["FILE_LOCAL_PATH"] = file.LocalPath ?? string.Empty,
+            ["FILE_TARGET_PATH"] = file.TargetPath ?? string.Empty,
+            ["FILE_REMOTE_PATH"] = remotePath ?? string.Empty,
+            ["FILE_NAME"] = System.IO.Path.GetFileName(file.LocalPath ?? string.Empty) ?? string.Empty,
+            ["PERMISSION"] = file.Permission ?? string.Empty,
+            ["SERVER_ALIAS"] = server.Alias ?? string.Empty,
+            ["SERVER_HOST"] = server.Host ?? string.Empty,
+            ["SERVER_PORT"] = server.Port.ToString(),
+            ["SERVER_USERNAME"] = server.Username ?? string.Empty
+        };
+        return dict;
+    }
+
+    private static string ExpandVariables(string input, Dictionary<string, string> vars)
+    {
+        if (string.IsNullOrEmpty(input)) return string.Empty;
+        var sb = new StringBuilder();
+        for (int i = 0; i < input.Length; i++)
+        {
+            if (i + 2 < input.Length && input[i] == '$' && input[i + 1] == '{')
+            {
+                int end = input.IndexOf('}', i + 2);
+                if (end > i + 2)
+                {
+                    var key = input.Substring(i + 2, end - (i + 2));
+                    if (vars.TryGetValue(key, out var val)) sb.Append(val);
+                    else sb.Append("${" + key + "}");
+                    i = end;
+                    continue;
+                }
+            }
+            sb.Append(input[i]);
+        }
+        return sb.ToString();
+    }
+
+    private static (bool success, string output) ExecutePowerShellStep(string command, Dictionary<string, string> vars, string? workingDir)
+    {
+        // 保留以备未来可能的本地脚本使用，但当前需求使用 SSH 远程执行
+        try
+        {
+            var baseDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SftpDeployer");
+            System.IO.Directory.CreateDirectory(baseDir);
+            var tempPath = System.IO.Path.Combine(baseDir, System.Guid.NewGuid().ToString("N") + ".ps1");
+            var expanded = ExpandVariables(command, vars);
+            System.IO.File.WriteAllText(tempPath, expanded, Encoding.UTF8);
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{tempPath}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+            if (!string.IsNullOrWhiteSpace(workingDir) && System.IO.Directory.Exists(workingDir))
+                psi.WorkingDirectory = workingDir!;
+            foreach (var kv in vars)
+                psi.Environment[kv.Key] = kv.Value ?? string.Empty;
+
+            using var proc = Process.Start(psi)!;
+            var stdout = proc.StandardOutput.ReadToEnd();
+            var stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            var code = proc.ExitCode;
+            try { System.IO.File.Delete(tempPath); } catch { }
+            var output = string.Join(Environment.NewLine, new[] { stdout, stderr }.Where(s => !string.IsNullOrEmpty(s)).Select(s => s.TrimEnd()));
+            return (code == 0, output);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    private static bool ExecuteSteps(IEnumerable<string> steps, Dictionary<string, string> vars, string? workingDir, List<string> logs, string prefix)
+    {
+        // 已不用于远程执行，保留向后兼容
+        var ok = true;
+        int idx = 1;
+        foreach (var raw in steps)
+        {
+            var step = raw ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(step)) { idx++; continue; }
+            var (success, output) = ExecutePowerShellStep(step, vars, workingDir);
+            if (!string.IsNullOrWhiteSpace(output))
+            {
+                foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    logs.Add($"{prefix} {line}");
+            }
+            if (!success)
+            {
+                logs.Add($"{prefix} 命令失败（第{idx}步）");
+                ok = false;
+                break;
+            }
+            idx++;
+        }
+        return ok;
+    }
+
+    private static (bool success, string output) ExecuteSshStep(SshClient ssh, string command, Dictionary<string, string> vars)
+    {
+        try
+        {
+            var expanded = ExpandVariables(command, vars);
+            var cmd = ssh.CreateCommand(expanded);
+            // Use a sane timeout to prevent hanging forever
+            cmd.CommandTimeout = TimeSpan.FromMinutes(10);
+            // Execute synchronously so SSH.NET drains output internally
+            var stdout = cmd.Execute(); // this returns the Result
+            var stderr = cmd.Error ?? string.Empty;
+            stdout ??= string.Empty;
+            var output = string.Join(Environment.NewLine, new[] { stdout, stderr }
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s.TrimEnd()));
+            return (cmd.ExitStatus == 0, output);
+        }
+        catch (SshOperationTimeoutException)
+        {
+            return (false, "SSH 命令执行超时");
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    private static bool ExecuteStepsRemote(SshClient ssh, IEnumerable<string> steps, Dictionary<string, string> vars, List<string> logs, string prefix, Action<string>? onLog = null)
+    {
+        void Emit(string line)
+        {
+            logs.Add(line);
+            try { onLog?.Invoke(line); } catch { }
+        }
+
+        var list = steps?.ToList() ?? new List<string>();
+        var ok = true;
+        foreach (var raw in list)
+        {
+            var step = raw ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(step)) continue;
+            var (success, output) = ExecuteSshStep(ssh, step, vars);
+            var result = output?.Replace("\r", " ").Replace("\n", " ")?.Trim();
+            if (string.IsNullOrWhiteSpace(result)) result = string.Empty;
+
+            // 原始命令（绿色，一行）
+            var cmdLine = string.IsNullOrWhiteSpace(prefix) ? step : $"{prefix} {step}";
+            Emit("[[CMD]]" + cmdLine);
+            // 执行结果（灰色，一行）
+            var resLine = string.IsNullOrWhiteSpace(prefix) ? result : $"{prefix} {result}";
+            Emit("[[RES]]" + resLine);
+
+            if (!success)
+            {
+                ok = false;
+                break;
+            }
+        }
+        return ok;
+    }
+
     // 数据模型
     public class ServerConfig : INotifyPropertyChanged
     {
@@ -1147,6 +1517,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         private string _permission = string.Empty;
         private ObservableCollection<ServerSelection> _serverSelections = new();
         private string _targetPath = string.Empty;
+        private string _scriptYaml = string.Empty;
 
         public string LocalPath
         {
@@ -1210,6 +1581,16 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             }
         }
 
+        public string ScriptYaml
+        {
+            get => _scriptYaml;
+            set
+            {
+                _scriptYaml = value ?? string.Empty;
+                OnPropertyChanged(nameof(ScriptYaml));
+            }
+        }
+
         public bool HasAnyServerSelected
         {
             get => _hasAnyServerSelected;
@@ -1247,6 +1628,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         public bool IsSelected { get; set; }
         public List<string> SelectedServerAliases { get; set; } = new();
         public List<string> HomeSelectedServerAliases { get; set; } = new();
+        public string? ScriptYaml { get; set; }
     }
 
     private class ConfigData
