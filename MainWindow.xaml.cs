@@ -33,6 +33,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
     private double _uploadProgress;
 
+    // 缓存日志区域比例，避免在无法计算时被覆盖为 null
+    private double? _lastLogRatio;
+
     private string _uploadStatus = string.Empty;
 
     public MainWindow()
@@ -42,6 +45,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
         _configFile = Path.Combine(_configDir, "config.json");
         Loaded += (_, __) => LoadConfig();
+        SizeChanged += (_, __) => SaveConfig();
+        StateChanged += (_, __) => SaveConfig();
+        Closing += (_, __) => SaveConfig();
 
         // 监听集合变化以保持选择同步，并自动保存
         Servers.CollectionChanged += (s, args) =>
@@ -129,19 +135,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 SaveConfig();
             }
         };
-        foreach (var sel in file.ServerSelections)
-            sel.PropertyChanged += (_, e) =>
-            {
-                if (e.PropertyName == nameof(ServerSelection.IsSelected))
-                {
-                    // 更新是否存在已选服务器的状态
-                    file.HasAnyServerSelected = file.ServerSelections.Any(s => s.IsSelected);
-                    // 若该文件的服务器列表全部被取消勾选，则自动取消该文件的勾选
-                    if (!file.HasAnyServerSelected) file.IsSelected = false;
-                    RecomputeCanUpload();
-                    SaveConfig();
-                }
-            };
+        AttachAllowedSelectionHandlers(file);
+        RebuildHomeSelections(file);
     }
 
     private void OnPropertyChanged(string name)
@@ -173,6 +168,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             // 若刷新后没有任何服务器被选中，则取消勾选该文件
             if (!file.HasAnyServerSelected) file.IsSelected = false;
             AttachSelectionHandlers(file);
+            // 允许列表刷新后，同步重建主页可选服务器列表
+            RebuildHomeSelections(file);
         }
 
         RecomputeCanUpload();
@@ -180,17 +177,69 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
     private void AttachSelectionHandlers(FileConfig file)
     {
+        AttachAllowedSelectionHandlers(file);
+        AttachHomeSelectionHandlers(file);
+    }
+
+    private void AttachAllowedSelectionHandlers(FileConfig file)
+    {
         foreach (var sel in file.ServerSelections)
+        {
             sel.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(ServerSelection.IsSelected))
                 {
                     file.HasAnyServerSelected = file.ServerSelections.Any(s => s.IsSelected);
-                    if (!file.HasAnyServerSelected) file.IsSelected = false;
+                    // 当允许列表变化时，重建主页会话选择列表
+                    RebuildHomeSelections(file);
+                    // 若完全不允许任何服务器，自动取消文件选择
+                    if (!file.HasAnyServerSelected)
+                        file.IsSelected = false;
                     RecomputeCanUpload();
+                    SaveConfig(); // 仅允许列表需要持久化
+                }
+            };
+        }
+    }
+
+    private void AttachHomeSelectionHandlers(FileConfig file)
+    {
+        foreach (var sel in file.HomeServerSelections)
+        {
+            sel.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(ServerSelection.IsSelected))
+                {
+                    file.HasAnyHomeServerSelected = file.HomeServerSelections.Any(s => s.IsSelected);
+                    // 若本次上传未选择任何服务器，自动取消该文件的勾选
+                    if (!file.HasAnyHomeServerSelected)
+                        file.IsSelected = false;
+                    RecomputeCanUpload();
+                    // 保存主页选择：与文件配置页分开持久化
                     SaveConfig();
                 }
             };
+        }
+    }
+
+    private void RebuildHomeSelections(FileConfig file)
+    {
+        // 仅包含被“允许”的服务器（allowed IsSelected=true）
+        var allowed = file.ServerSelections.Where(s => s.IsSelected).ToList();
+        var prev = file.HomeServerSelections?.ToDictionary(s => s.Alias, s => s.IsSelected)
+                   ?? new Dictionary<string, bool>();
+        file.HomeServerSelections = new ObservableCollection<ServerSelection>(
+            allowed.Select(a => new ServerSelection
+            {
+                Alias = a.Alias,
+                IsSelected = prev.TryGetValue(a.Alias, out var sel) ? sel : true
+            })
+        );
+        file.HasAnyHomeServerSelected = file.HomeServerSelections.Any(s => s.IsSelected);
+        if (!file.HasAnyHomeServerSelected)
+            file.IsSelected = false;
+        // 重新挂载 home 选择事件
+        AttachHomeSelectionHandlers(file);
     }
 
     private void AppendLog(string message)
@@ -294,7 +343,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             var jobs = (from f in Files.Where(f => f.IsSelected)
                 let fileInfo = new FileInfo(f.LocalPath)
                 where fileInfo.Exists
-                from sel in f.ServerSelections.Where(s => s.IsSelected)
+                from sel in f.HomeServerSelections.Where(s => s.IsSelected)
                 join srv in Servers on sel.Alias equals srv.Alias
                 select new { File = f, Server = srv, FileInfo = fileInfo }).ToList();
 
@@ -520,7 +569,54 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         try
         {
             if (_suspendAutoSave) return;
+            if (!IsLoaded) return;
             Directory.CreateDirectory(_configDir);
+
+            // 计算要保存的窗口尺寸与状态
+            double? saveWidth = null, saveHeight = null;
+            string? saveState = null;
+            if (IsLoaded)
+            {
+                var state = WindowState;
+                saveState = state.ToString();
+                if (state == WindowState.Normal)
+                {
+                    // 使用当前窗口宽高
+                    if (!double.IsNaN(Width) && Width > 0) saveWidth = Width;
+                    if (!double.IsNaN(Height) && Height > 0) saveHeight = Height;
+                }
+                else
+                {
+                    // 使用还原尺寸
+                    var rb = RestoreBounds;
+                    if (rb.Width > 0) saveWidth = rb.Width;
+                    if (rb.Height > 0) saveHeight = rb.Height;
+                }
+            }
+
+            // 计算主页日志区域比例
+            double? logRatio = null;
+            try
+            {
+                var topH = HomeTopRow?.ActualHeight ?? 0;
+                var bottomH = HomeBottomRow?.ActualHeight ?? 0;
+                var total = topH + bottomH;
+                if (total > 1 && bottomH > 0)
+                {
+                    var r = bottomH / total;
+                    // 合理范围裁剪，避免异常值
+                    if (r > 0.03 && r < 0.97)
+                    {
+                        logRatio = r;
+                        _lastLogRatio = r;
+                    }
+                }
+            }
+            catch { }
+
+            if (logRatio == null && _lastLogRatio.HasValue)
+                logRatio = _lastLogRatio.Value;
+
             var data = new ConfigData
             {
                 Servers = Servers.Select(s => new ServerConfig
@@ -537,8 +633,13 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     TargetPath = f.TargetPath,
                     Permission = string.IsNullOrWhiteSpace(f.Permission) ? null : f.Permission,
                     IsSelected = f.IsSelected,
-                    SelectedServerAliases = f.ServerSelections.Where(ss => ss.IsSelected).Select(ss => ss.Alias).ToList()
-                }).ToList()
+                    SelectedServerAliases = f.ServerSelections.Where(ss => ss.IsSelected).Select(ss => ss.Alias).ToList(),
+                    HomeSelectedServerAliases = f.HomeServerSelections.Where(hs => hs.IsSelected).Select(hs => hs.Alias).ToList()
+                }).ToList(),
+                WindowWidth = saveWidth,
+                WindowHeight = saveHeight,
+                WindowState = saveState,
+                LogAreaRatio = logRatio
             };
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
             File.WriteAllText(_configFile, json, Encoding.UTF8);
@@ -558,6 +659,26 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             var json = File.ReadAllText(_configFile, Encoding.UTF8);
             var data = JsonSerializer.Deserialize<ConfigData>(json);
             if (data == null) return;
+
+            // 应用已保存的窗口尺寸与状态
+            if (data.WindowWidth.HasValue && data.WindowWidth.Value > 100)
+                Width = data.WindowWidth.Value;
+            if (data.WindowHeight.HasValue && data.WindowHeight.Value > 100)
+                Height = data.WindowHeight.Value;
+            if (!string.IsNullOrWhiteSpace(data.WindowState) && Enum.TryParse<System.Windows.WindowState>(data.WindowState, out var st))
+                WindowState = st;
+
+            // 应用日志区域比例
+            if (data.LogAreaRatio.HasValue)
+            {
+                var r = data.LogAreaRatio.Value;
+                if (r > 0.03 && r < 0.97)
+                {
+                    HomeTopRow.Height = new GridLength(1 - r, GridUnitType.Star);
+                    HomeBottomRow.Height = new GridLength(r, GridUnitType.Star);
+                    _lastLogRatio = r;
+                }
+            }
 
             Servers.Clear();
             foreach (var s in data.Servers)
@@ -591,6 +712,21 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         })
                 );
                 fc.HasAnyServerSelected = fc.ServerSelections.Any(s => s.IsSelected);
+
+                // Restore Home (session) selections from persisted list, intersected with allowed
+                var homeSaved = new HashSet<string>(f.HomeSelectedServerAliases ?? new List<string>());
+                var allowed = fc.ServerSelections.Where(ss => ss.IsSelected).Select(ss => ss.Alias).ToList();
+                fc.HomeServerSelections = new ObservableCollection<ServerSelection>(
+                    allowed.Select(a => new ServerSelection
+                    {
+                        Alias = a,
+                        IsSelected = homeSaved.Count == 0 ? true : homeSaved.Contains(a)
+                    })
+                );
+                fc.HasAnyHomeServerSelected = fc.HomeServerSelections.Any(s => s.IsSelected);
+                if (!fc.HasAnyHomeServerSelected)
+                    fc.IsSelected = false;
+
                 Files.Add(fc);
             }
 
@@ -806,6 +942,107 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             fc.Permission = normalized;
     }
 
+    private void OnHomeSplitterDragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    {
+        // 用户拖拽完成时保存当前日志区域高度比例
+        SaveConfig();
+    }
+
+    // ======= Home 文件表拖拽排序 =======
+    private Point _homeDragStartPoint;
+    private FileConfig? _homeDragItem;
+    private bool _homeIsDragging;
+
+    private void OnHomeFilesPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGrid grid) return;
+        _homeDragStartPoint = e.GetPosition(grid);
+
+        // 避免在点击交互控件时触发拖拽（如 CheckBox）
+        var src = e.OriginalSource as DependencyObject;
+        if (FindVisualParent<System.Windows.Controls.Primitives.ToggleButton>(src) != null ||
+            FindVisualParent<System.Windows.Controls.Primitives.ButtonBase>(src) != null)
+        {
+            _homeDragItem = null;
+            _homeIsDragging = false;
+            return;
+        }
+
+        var row = FindVisualParent<DataGridRow>(src);
+        _homeDragItem = row?.Item as FileConfig;
+        _homeIsDragging = false;
+    }
+
+    private void OnHomeFilesMouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not DataGrid grid) return;
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+        if (_homeDragItem == null) return;
+
+        var pos = e.GetPosition(grid);
+        if (Math.Abs(pos.X - _homeDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(pos.Y - _homeDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        _homeIsDragging = true;
+        try
+        {
+            DragDrop.DoDragDrop(grid, _homeDragItem, DragDropEffects.Move);
+        }
+        finally
+        {
+            _homeIsDragging = false;
+        }
+    }
+
+    private void OnHomeFilesDragOver(object sender, DragEventArgs e)
+    {
+        if (_homeIsDragging && e.Data.GetDataPresent(typeof(FileConfig)))
+        {
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+        }
+        else
+        {
+            e.Effects = DragDropEffects.None;
+        }
+    }
+
+    private void OnHomeFilesDrop(object sender, DragEventArgs e)
+    {
+        if (sender is not DataGrid grid) return;
+        if (!e.Data.GetDataPresent(typeof(FileConfig))) return;
+        var draggedItem = (FileConfig?)e.Data.GetData(typeof(FileConfig));
+        if (draggedItem == null) return;
+
+        // 计算目标索引
+        var target = GetItemAtPosition<FileConfig>(grid, e.GetPosition(grid));
+        int oldIndex = Files.IndexOf(draggedItem);
+        int newIndex = target != null ? Files.IndexOf(target) : Files.Count - 1;
+        if (oldIndex < 0) return;
+        if (newIndex < 0) newIndex = Files.Count - 1;
+        if (newIndex >= Files.Count) newIndex = Files.Count - 1;
+
+        if (newIndex != oldIndex)
+        {
+            Files.Move(oldIndex, newIndex);
+            SelectedFile = draggedItem;
+            SaveConfig();
+        }
+
+        _homeDragItem = null;
+        _homeIsDragging = false;
+    }
+
+    private static TItem? GetItemAtPosition<TItem>(DataGrid grid, Point position) where TItem : class
+    {
+        var hit = VisualTreeHelper.HitTest(grid, position);
+        if (hit == null) return null;
+        var d = hit.VisualHit;
+        var row = FindVisualParent<DataGridRow>(d);
+        return row?.Item as TItem;
+    }
+
     // 数据模型
     public class ServerConfig : INotifyPropertyChanged
     {
@@ -904,6 +1141,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     public class FileConfig : INotifyPropertyChanged
     {
         private bool _hasAnyServerSelected;
+        private bool _hasAnyHomeServerSelected;
         private bool _isSelected;
         private string _localPath = string.Empty;
         private string _permission = string.Empty;
@@ -950,6 +1188,18 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             }
         }
 
+        // 主页会话内的服务器选择（仅显示“允许上传”的服务器子集）
+        private ObservableCollection<ServerSelection> _homeServerSelections = new();
+        public ObservableCollection<ServerSelection> HomeServerSelections
+        {
+            get => _homeServerSelections;
+            set
+            {
+                _homeServerSelections = value;
+                OnPropertyChanged(nameof(HomeServerSelections));
+            }
+        }
+
         public string Permission
         {
             get => _permission;
@@ -970,6 +1220,16 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             }
         }
 
+        public bool HasAnyHomeServerSelected
+        {
+            get => _hasAnyHomeServerSelected;
+            set
+            {
+                _hasAnyHomeServerSelected = value;
+                OnPropertyChanged(nameof(HasAnyHomeServerSelected));
+            }
+        }
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         protected void OnPropertyChanged(string name)
@@ -986,11 +1246,16 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         public string? Permission { get; set; }
         public bool IsSelected { get; set; }
         public List<string> SelectedServerAliases { get; set; } = new();
+        public List<string> HomeSelectedServerAliases { get; set; } = new();
     }
 
     private class ConfigData
     {
         public List<ServerConfig> Servers { get; set; } = new();
         public List<FileConfigDTO> Files { get; set; } = new();
+        public double? WindowWidth { get; set; }
+        public double? WindowHeight { get; set; }
+        public string? WindowState { get; set; }
+        public double? LogAreaRatio { get; set; }
     }
 }

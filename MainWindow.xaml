@@ -17,17 +17,22 @@
             <TabItem Header="主页">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="150" />
+                        <RowDefinition x:Name="HomeTopRow" Height="*" />
+                        <RowDefinition x:Name="HomeSplitterRow" Height="Auto" />
+                        <RowDefinition x:Name="HomeBottomRow" Height="*" />
                     </Grid.RowDefinitions>
-                    <ui:DataGrid ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False"
-                                 ColumnWidth="Auto" HorizontalScrollBarVisibility="Auto">
+                    <ui:DataGrid x:Name="HomeFilesGrid" ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False"
+                                 ColumnWidth="Auto" HorizontalScrollBarVisibility="Auto" MinHeight="100" CanUserSortColumns="False"
+                                 AllowDrop="True"
+                                 PreviewMouseLeftButtonDown="OnHomeFilesPreviewMouseLeftButtonDown"
+                                 MouseMove="OnHomeFilesMouseMove"
+                                 DragOver="OnHomeFilesDragOver"
+                                 Drop="OnHomeFilesDrop">
                         <ui:DataGrid.Columns>
                             <DataGridTemplateColumn Header="选择" Width="Auto" MinWidth="60">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding HasAnyServerSelected}"
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding HasAnyHomeServerSelected}"
                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
@@ -37,7 +42,7 @@
                             <DataGridTemplateColumn Header="服务器" Width="Auto" MinWidth="100">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <ItemsControl ItemsSource="{Binding ServerSelections}">
+                                        <ItemsControl ItemsSource="{Binding HomeServerSelections}">
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
                                                     <WrapPanel />
@@ -57,16 +62,31 @@
                     </ui:DataGrid>
 
 
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,0">
-                        <Button Content="一键上传" Width="120" Click="OnUploadClick" IsEnabled="{Binding CanUpload}" />
-                        <TextBlock Text="  进度：" VerticalAlignment="Center" Margin="12,0,0,0" />
-                        <ProgressBar Width="300" Height="20" Minimum="0" Maximum="100" Value="{Binding UploadProgress}" />
-                        <TextBlock Text="{Binding UploadStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
-                    </StackPanel>
+                    <!-- 分隔顶部文件表和底部区域 -->
+                    <GridSplitter Grid.Row="1"
+                                  Height="10"
+                                  HorizontalAlignment="Stretch"
+                                  Background="#33000000"
+                                  ResizeDirection="Rows"
+                                  ResizeBehavior="PreviousAndNext"
+                                  ShowsPreview="True"
+                                  IsTabStop="False"
+                                  Cursor="SizeNS"
+                                  Margin="0,6,0,6"
+                                  DragCompleted="OnHomeSplitterDragCompleted" />
 
-                    <GroupBox Grid.Row="2" Header="日志" Margin="0,8,0,0">
-                        <TextBox Text="{Binding LogText}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" />
-                    </GroupBox>
+                    <!-- 底部区域：上方按钮，下方日志 -->
+                    <DockPanel Grid.Row="2" LastChildFill="True">
+                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,8">
+                            <Button Content="一键上传" Width="120" Click="OnUploadClick" IsEnabled="{Binding CanUpload}" />
+                            <TextBlock Text="  进度：" VerticalAlignment="Center" Margin="12,0,0,0" />
+                            <ProgressBar Width="300" Height="20" Minimum="0" Maximum="100" Value="{Binding UploadProgress}" />
+                            <TextBlock Text="{Binding UploadStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <GroupBox Header="日志" MinHeight="60">
+                            <TextBox Text="{Binding LogText}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" />
+                        </GroupBox>
+                    </DockPanel>
                 </Grid>
             </TabItem>
             <TabItem Header="文件配置">
@@ -75,12 +95,31 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <DataGrid x:Name="FilesGrid" ItemsSource="{Binding Files}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto"
+                    <DataGrid x:Name="FilesGrid" ItemsSource="{Binding Files}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto" CanUserSortColumns="False"
                               HorizontalScrollBarVisibility="Auto"
                               PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="Auto" MinWidth="120" />
                             <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
+                            <DataGridTemplateColumn Header="服务器" Width="Auto" MinWidth="100">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ItemsControl ItemsSource="{Binding ServerSelections}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <CheckBox Content="{Binding Alias}" IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="4,0"
+                                                              Width="Auto" MinWidth="0" HorizontalAlignment="Left" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="权限" Binding="{Binding Permission, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="60" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -108,7 +147,7 @@
                             </CollectionViewSource.LiveSortingProperties>
                         </CollectionViewSource>
                     </Grid.Resources>
-                    <DataGrid x:Name="ServersGrid" ItemsSource="{Binding Source={StaticResource ServersView}}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto"
+                    <DataGrid x:Name="ServersGrid" ItemsSource="{Binding Source={StaticResource ServersView}}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" ColumnWidth="Auto" CanUserSortColumns="False"
                               HorizontalScrollBarVisibility="Auto"
                               PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                         <DataGrid.Columns>
