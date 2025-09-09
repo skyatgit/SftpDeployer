@@ -15,11 +15,11 @@
     <ItemGroup>
         <PackageReference Include="WPF-UI" Version="4.0.3"/>
         <PackageReference Include="SSH.NET" Version="2023.0.1"/>
-        <PackageReference Include="YamlDotNet" Version="15.3.0" />
+        <PackageReference Include="YamlDotNet" Version="15.3.0"/>
     </ItemGroup>
 
     <ItemGroup>
-      <Content Include="SftpDeployer.sln" />
+        <Content Include="SftpDeployer.sln"/>
     </ItemGroup>
 
 </Project>

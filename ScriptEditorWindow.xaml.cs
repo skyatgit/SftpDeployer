@@ -5,8 +5,6 @@ namespace SftpDeployer;
 
 public partial class ScriptEditorWindow : FluentWindow
 {
-    public string EditedText { get; private set; } = string.Empty;
-
     private static readonly string DefaultYaml =
         "# 可用变量（在命令中使用 ${VAR}）：\n" +
         "#   ${FILE_LOCAL_PATH}  本地文件完整路径\n" +
@@ -29,6 +27,8 @@ public partial class ScriptEditorWindow : FluentWindow
         Editor.Text = string.IsNullOrWhiteSpace(initialText) ? DefaultYaml : initialText;
     }
 
+    public string EditedText { get; private set; } = string.Empty;
+
     private void OnOkClick(object sender, RoutedEventArgs e)
     {
         var text = Editor.Text ?? string.Empty;
@@ -38,6 +38,7 @@ public partial class ScriptEditorWindow : FluentWindow
             text = DefaultYaml;
             Editor.Text = text;
         }
+
         EditedText = text;
         DialogResult = true;
         Close();

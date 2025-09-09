@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,19 +8,19 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 using Wpf.Ui.Controls;
-using DataGrid = System.Windows.Controls.DataGrid;
-using TextBox = System.Windows.Controls.TextBox;
-using System.Diagnostics;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
-using System.Windows.Documents;
-using System.Windows.Media;
+using Button = System.Windows.Controls.Button;
+using DataGrid = System.Windows.Controls.DataGrid;
+using TextBox = System.Windows.Controls.TextBox;
 
 namespace SftpDeployer;
 
@@ -28,8 +29,16 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     // 配置持久化
     private readonly string _configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SftpDeployer");
     private readonly string _configFile;
+    private FileConfig? _homeDragItem;
+
+    // ======= Home 文件表拖拽排序 =======
+    private Point _homeDragStartPoint;
+    private bool _homeIsDragging;
 
     private bool _isUploading;
+
+    // 缓存日志区域比例，避免在无法计算时被覆盖为 null
+    private double? _lastLogRatio;
 
     private string _logText = string.Empty;
 
@@ -37,9 +46,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     private bool _suspendAutoSave;
 
     private double _uploadProgress;
-
-    // 缓存日志区域比例，避免在无法计算时被覆盖为 null
-    private double? _lastLogRatio;
 
     private string _uploadStatus = string.Empty;
 
@@ -192,7 +198,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     private void AttachAllowedSelectionHandlers(FileConfig file)
     {
         foreach (var sel in file.ServerSelections)
-        {
             sel.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(ServerSelection.IsSelected))
@@ -207,13 +212,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     SaveConfig(); // 仅允许列表需要持久化
                 }
             };
-        }
     }
 
     private void AttachHomeSelectionHandlers(FileConfig file)
     {
         foreach (var sel in file.HomeServerSelections)
-        {
             sel.PropertyChanged += (_, e) =>
             {
                 if (e.PropertyName == nameof(ServerSelection.IsSelected))
@@ -227,7 +230,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     SaveConfig();
                 }
             };
-        }
     }
 
     private void RebuildHomeSelections(FileConfig file)
@@ -255,7 +257,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         try
         {
             var run = new Run(text) { Foreground = brush };
-            var p = new Paragraph(run) { Margin = new System.Windows.Thickness(0) };
+            var p = new Paragraph(run) { Margin = new Thickness(0) };
             if (LogRichBox != null)
             {
                 if (LogRichBox.Document == null)
@@ -264,7 +266,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 LogRichBox.ScrollToEnd();
             }
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private void AppendLog(string message)
@@ -280,12 +284,14 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             AppendParagraph(txt, Brushes.Green);
             return;
         }
+
         if (line != null && line.StartsWith("[[RES]]"))
         {
             var txt = line.Length > 7 ? line.Substring(7) : string.Empty;
             AppendParagraph(txt, Brushes.Gray);
             return;
         }
+
         AppendLog(line ?? string.Empty);
     }
 
@@ -298,15 +304,18 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 LogRichBox.Document = new FlowDocument();
                 LogRichBox.ScrollToHome();
             }
+
             LogText = string.Empty;
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     // 按钮事件
     private void OnEditScriptClick(object sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.Button btn) return;
+        if (sender is not Button btn) return;
         if (btn.DataContext is not FileConfig fc) return;
         var win = new ScriptEditorWindow(fc.ScriptYaml) { Owner = this };
         var res = win.ShowDialog();
@@ -430,7 +439,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
             foreach (var job in jobs)
             {
-
                 var scriptLogs = new List<string>();
                 try
                 {
@@ -456,7 +464,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         using var ssh = new SshClient(connectionInfo);
                         ssh.Connect();
                         // 上传前脚本：在远程服务器上通过 SSH 执行
-                        bool parseErrorLogged = false;
+                        var parseErrorLogged = false;
                         if (script?.BeforeScript != null && script.BeforeScript.Count > 0)
                         {
                             if (!ExecuteStepsRemote(ssh, script.BeforeScript, vars, scriptLogs, $"[{job.Server.Alias}] [before]", line => Dispatcher.Invoke(() => AppendParsedLog(line))))
@@ -544,6 +552,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                                             Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] [after] 未检测到 after_script（不执行）"));
                                         }
                                     }
+
                                     return;
                                 }
                             }
@@ -646,7 +655,13 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         }
 
                         // 断开 SSH
-                        try { ssh.Disconnect(); } catch { }
+                        try
+                        {
+                            ssh.Disconnect();
+                        }
+                        catch
+                        {
+                        }
                     });
 
                     successCount++;
@@ -768,7 +783,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     }
                 }
             }
-            catch { }
+            catch
+            {
+            }
 
             if (logRatio == null && _lastLogRatio.HasValue)
                 logRatio = _lastLogRatio.Value;
@@ -822,7 +839,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 Width = data.WindowWidth.Value;
             if (data.WindowHeight.HasValue && data.WindowHeight.Value > 100)
                 Height = data.WindowHeight.Value;
-            if (!string.IsNullOrWhiteSpace(data.WindowState) && Enum.TryParse<System.Windows.WindowState>(data.WindowState, out var st))
+            if (!string.IsNullOrWhiteSpace(data.WindowState) && Enum.TryParse<WindowState>(data.WindowState, out var st))
                 WindowState = st;
 
             // 应用日志区域比例
@@ -1100,16 +1117,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             fc.Permission = normalized;
     }
 
-    private void OnHomeSplitterDragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    private void OnHomeSplitterDragCompleted(object sender, DragCompletedEventArgs e)
     {
         // 用户拖拽完成时保存当前日志区域高度比例
         SaveConfig();
     }
-
-    // ======= Home 文件表拖拽排序 =======
-    private Point _homeDragStartPoint;
-    private FileConfig? _homeDragItem;
-    private bool _homeIsDragging;
 
     private void OnHomeFilesPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -1118,8 +1130,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
         // 避免在点击交互控件时触发拖拽（如 CheckBox）
         var src = e.OriginalSource as DependencyObject;
-        if (FindVisualParent<System.Windows.Controls.Primitives.ToggleButton>(src) != null ||
-            FindVisualParent<System.Windows.Controls.Primitives.ButtonBase>(src) != null)
+        if (FindVisualParent<ToggleButton>(src) != null ||
+            FindVisualParent<ButtonBase>(src) != null)
         {
             _homeDragItem = null;
             _homeIsDragging = false;
@@ -1175,8 +1187,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
         // 计算目标索引
         var target = GetItemAtPosition<FileConfig>(grid, e.GetPosition(grid));
-        int oldIndex = Files.IndexOf(draggedItem);
-        int newIndex = target != null ? Files.IndexOf(target) : Files.Count - 1;
+        var oldIndex = Files.IndexOf(draggedItem);
+        var newIndex = target != null ? Files.IndexOf(target) : Files.Count - 1;
         if (oldIndex < 0) return;
         if (newIndex < 0) newIndex = Files.Count - 1;
         if (newIndex >= Files.Count) newIndex = Files.Count - 1;
@@ -1199,13 +1211,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         var d = hit.VisualHit;
         var row = FindVisualParent<DataGridRow>(d);
         return row?.Item as TItem;
-    }
-
-    // ===== 脚本解析与执行 =====
-    private class FileScript
-    {
-        public List<string>? BeforeScript { get; set; }
-        public List<string>? AfterScript { get; set; }
     }
 
     private static FileScript? ParseScriptYaml(string? yaml)
@@ -1251,7 +1256,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             ["FILE_LOCAL_PATH"] = file.LocalPath ?? string.Empty,
             ["FILE_TARGET_PATH"] = file.TargetPath ?? string.Empty,
             ["FILE_REMOTE_PATH"] = remotePath ?? string.Empty,
-            ["FILE_NAME"] = System.IO.Path.GetFileName(file.LocalPath ?? string.Empty) ?? string.Empty,
+            ["FILE_NAME"] = Path.GetFileName(file.LocalPath ?? string.Empty) ?? string.Empty,
             ["PERMISSION"] = file.Permission ?? string.Empty,
             ["SERVER_ALIAS"] = server.Alias ?? string.Empty,
             ["SERVER_HOST"] = server.Host ?? string.Empty,
@@ -1265,11 +1270,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         if (string.IsNullOrEmpty(input)) return string.Empty;
         var sb = new StringBuilder();
-        for (int i = 0; i < input.Length; i++)
+        for (var i = 0; i < input.Length; i++)
         {
             if (i + 2 < input.Length && input[i] == '$' && input[i + 1] == '{')
             {
-                int end = input.IndexOf('}', i + 2);
+                var end = input.IndexOf('}', i + 2);
                 if (end > i + 2)
                 {
                     var key = input.Substring(i + 2, end - (i + 2));
@@ -1279,8 +1284,10 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     continue;
                 }
             }
+
             sb.Append(input[i]);
         }
+
         return sb.ToString();
     }
 
@@ -1289,11 +1296,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         // 保留以备未来可能的本地脚本使用，但当前需求使用 SSH 远程执行
         try
         {
-            var baseDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SftpDeployer");
-            System.IO.Directory.CreateDirectory(baseDir);
-            var tempPath = System.IO.Path.Combine(baseDir, System.Guid.NewGuid().ToString("N") + ".ps1");
+            var baseDir = Path.Combine(Path.GetTempPath(), "SftpDeployer");
+            Directory.CreateDirectory(baseDir);
+            var tempPath = Path.Combine(baseDir, Guid.NewGuid().ToString("N") + ".ps1");
             var expanded = ExpandVariables(command, vars);
-            System.IO.File.WriteAllText(tempPath, expanded, Encoding.UTF8);
+            File.WriteAllText(tempPath, expanded, Encoding.UTF8);
 
             var psi = new ProcessStartInfo
             {
@@ -1306,7 +1313,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8
             };
-            if (!string.IsNullOrWhiteSpace(workingDir) && System.IO.Directory.Exists(workingDir))
+            if (!string.IsNullOrWhiteSpace(workingDir) && Directory.Exists(workingDir))
                 psi.WorkingDirectory = workingDir!;
             foreach (var kv in vars)
                 psi.Environment[kv.Key] = kv.Value ?? string.Empty;
@@ -1316,7 +1323,14 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             var stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit();
             var code = proc.ExitCode;
-            try { System.IO.File.Delete(tempPath); } catch { }
+            try
+            {
+                File.Delete(tempPath);
+            }
+            catch
+            {
+            }
+
             var output = string.Join(Environment.NewLine, new[] { stdout, stderr }.Where(s => !string.IsNullOrEmpty(s)).Select(s => s.TrimEnd()));
             return (code == 0, output);
         }
@@ -1330,25 +1344,30 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         // 已不用于远程执行，保留向后兼容
         var ok = true;
-        int idx = 1;
+        var idx = 1;
         foreach (var raw in steps)
         {
             var step = raw ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(step)) { idx++; continue; }
+            if (string.IsNullOrWhiteSpace(step))
+            {
+                idx++;
+                continue;
+            }
+
             var (success, output) = ExecutePowerShellStep(step, vars, workingDir);
             if (!string.IsNullOrWhiteSpace(output))
-            {
                 foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
                     logs.Add($"{prefix} {line}");
-            }
             if (!success)
             {
                 logs.Add($"{prefix} 命令失败（第{idx}步）");
                 ok = false;
                 break;
             }
+
             idx++;
         }
+
         return ok;
     }
 
@@ -1384,7 +1403,13 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         void Emit(string line)
         {
             logs.Add(line);
-            try { onLog?.Invoke(line); } catch { }
+            try
+            {
+                onLog?.Invoke(line);
+            }
+            catch
+            {
+            }
         }
 
         var list = steps?.ToList() ?? new List<string>();
@@ -1410,7 +1435,15 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 break;
             }
         }
+
         return ok;
+    }
+
+    // ===== 脚本解析与执行 =====
+    private class FileScript
+    {
+        public List<string>? BeforeScript { get; set; }
+        public List<string>? AfterScript { get; set; }
     }
 
     // 数据模型
@@ -1510,14 +1543,17 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
     public class FileConfig : INotifyPropertyChanged
     {
-        private bool _hasAnyServerSelected;
         private bool _hasAnyHomeServerSelected;
+        private bool _hasAnyServerSelected;
+
+        // 主页会话内的服务器选择（仅显示“允许上传”的服务器子集）
+        private ObservableCollection<ServerSelection> _homeServerSelections = new();
         private bool _isSelected;
         private string _localPath = string.Empty;
         private string _permission = string.Empty;
+        private string _scriptYaml = string.Empty;
         private ObservableCollection<ServerSelection> _serverSelections = new();
         private string _targetPath = string.Empty;
-        private string _scriptYaml = string.Empty;
 
         public string LocalPath
         {
@@ -1559,8 +1595,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             }
         }
 
-        // 主页会话内的服务器选择（仅显示“允许上传”的服务器子集）
-        private ObservableCollection<ServerSelection> _homeServerSelections = new();
         public ObservableCollection<ServerSelection> HomeServerSelections
         {
             get => _homeServerSelections;
