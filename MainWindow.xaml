@@ -85,7 +85,7 @@
                             <TextBlock Text="{Binding UploadStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
                         </StackPanel>
                         <GroupBox Header="日志" MinHeight="60">
-                            <RichTextBox x:Name="LogRichBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto" />
+                            <RichTextBox x:Name="LogRichBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Foreground="White" />
                         </GroupBox>
                     </DockPanel>
                 </Grid>

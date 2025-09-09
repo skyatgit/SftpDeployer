@@ -273,7 +273,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
     private void AppendLog(string message)
     {
-        AppendParagraph(message, Brushes.Black);
+        AppendParagraph(message, Brushes.White);
     }
 
     private void AppendParsedLog(string line)
