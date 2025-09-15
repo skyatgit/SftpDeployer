@@ -442,7 +442,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 var scriptLogs = new List<string>();
                 try
                 {
-                    var skipped = false;
                     var permApplied = false;
                     string? permError = null;
                     string? appliedPermDigits = null;
@@ -519,7 +518,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                                             permError = ToChineseError(exPerm);
                                         }
 
-                                    skipped = true;
                                     sftp.Disconnect();
 
                                     // 在执行 after_script 之前，输出“已是最新”和权限结果
@@ -1070,8 +1068,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
     }
 
-    private static T? FindVisualParent<T>(DependencyObject child) where T : DependencyObject
+    private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
     {
+        if (child == null) return null;
         var parent = VisualTreeHelper.GetParent(child);
         while (parent != null)
         {
