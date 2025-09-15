@@ -14,8 +14,8 @@
 
     <ItemGroup>
         <PackageReference Include="WPF-UI" Version="4.0.3"/>
-        <PackageReference Include="SSH.NET" Version="2023.0.1"/>
-        <PackageReference Include="YamlDotNet" Version="15.3.0"/>
+        <PackageReference Include="SSH.NET" Version="2025.0.0" />
+        <PackageReference Include="YamlDotNet" Version="16.3.0" />
     </ItemGroup>
 
     <ItemGroup>
