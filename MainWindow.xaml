@@ -160,7 +160,7 @@
                               HorizontalScrollBarVisibility="Auto"
                               PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="别名" Binding="{Binding Alias, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="80" />
+                            <DataGridTextColumn Header="别名" Binding="{Binding Alias, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Width="Auto" MinWidth="80" />
                             <DataGridTextColumn Header="服务器IP" Binding="{Binding Host, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
                             <DataGridTextColumn Header="端口" Binding="{Binding Port, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="60" />
                             <DataGridTextColumn Header="用户名" Binding="{Binding Username, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="100" />
