@@ -150,7 +150,20 @@
                               HorizontalScrollBarVisibility="Auto"
                               PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="本地文件" Binding="{Binding LocalPath}" IsReadOnly="True" Width="Auto" MinWidth="120" />
+                            <DataGridTemplateColumn Header="本地文件" Width="Auto" MinWidth="220">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding LocalPath}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,8,0" ToolTip="{Binding LocalPath}" />
+                                            <Button Content="选择..." Grid.Column="1" Width="70" Click="OnChangeLocalFileClick" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="目标路径" Binding="{Binding TargetPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="Auto" MinWidth="120" />
                             <DataGridTemplateColumn Header="服务器" Width="Auto" MinWidth="100">
                                 <DataGridTemplateColumn.CellTemplate>

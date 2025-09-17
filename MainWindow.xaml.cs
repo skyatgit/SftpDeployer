@@ -391,6 +391,47 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
     }
 
+    private void OnChangeLocalFileClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn) return;
+        if (btn.DataContext is not FileConfig fc) return;
+
+        string? initialDir = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(fc.LocalPath))
+            {
+                var dir = Path.GetDirectoryName(fc.LocalPath);
+                if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+                    initialDir = dir;
+            }
+        }
+        catch { }
+
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择本地文件",
+            Multiselect = false
+        };
+        if (initialDir != null) dlg.InitialDirectory = initialDir;
+
+        var oldFileName = System.IO.Path.GetFileName(fc.LocalPath ?? string.Empty);
+        if (dlg.ShowDialog() == true)
+        {
+            var newPath = dlg.FileName;
+            var newFileName = System.IO.Path.GetFileName(newPath);
+
+            fc.LocalPath = newPath;
+
+            var defaultOldTarget = "/" + (oldFileName ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(fc.TargetPath) || string.Equals(fc.TargetPath, defaultOldTarget, StringComparison.CurrentCultureIgnoreCase))
+            {
+                fc.TargetPath = "/" + newFileName;
+            }
+            SaveConfig();
+        }
+    }
+
     private void OnAddFileClick(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog
