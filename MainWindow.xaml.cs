@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -36,6 +37,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     private bool _homeIsDragging;
 
     private bool _isUploading;
+    private CancellationTokenSource? _ctsAll;
+    private CancellationTokenSource? _ctsCurrent;
 
     // 缓存日志区域比例，避免在无法计算时被覆盖为 null
     private double? _lastLogRatio;
@@ -168,6 +171,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     }
 
     public bool CanUpload => !_isUploading && Files.Any(f => f.IsSelected);
+    public bool CanCancel => _isUploading;
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void SubscribeFile(FileConfig file)
@@ -445,9 +449,12 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
     {
         _isUploading = true;
         OnPropertyChanged(nameof(CanUpload));
+        OnPropertyChanged(nameof(CanCancel));
         UploadStatus = "正在上传...";
         UploadProgress = 0;
         ClearLog();
+        _ctsAll = new CancellationTokenSource();
+        _ctsCurrent = null;
 
         try
         {
@@ -475,6 +482,10 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
             foreach (var job in jobs)
             {
+                if (_ctsAll?.IsCancellationRequested == true)
+                    break;
+                _ctsCurrent?.Dispose();
+                _ctsCurrent = new CancellationTokenSource();
                 var scriptLogs = new List<string>();
                 try
                 {
@@ -483,6 +494,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     string? appliedPermDigits = null;
                     await Task.Run(() =>
                     {
+                        if (_ctsAll?.IsCancellationRequested == true) throw new OperationCanceledException("所有上传任务已取消");
+                        if (_ctsCurrent?.IsCancellationRequested == true) throw new OperationCanceledException("当前文件上传已取消");
                         var remotePath = job.File.TargetPath.Replace("\\", "/");
 
                         // 解析脚本并准备变量
@@ -518,6 +531,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                                 Dispatcher.Invoke(() => AppendLog($"[{job.Server.Alias}] [before] 未检测到 before_script（不执行）"));
                             }
                         }
+
+                        if (_ctsAll?.IsCancellationRequested == true) throw new OperationCanceledException("所有上传任务已取消");
+                        if (_ctsCurrent?.IsCancellationRequested == true) throw new OperationCanceledException("当前文件上传已取消");
 
                         // 在执行 SFTP 操作前输出开始上传日志（紧跟在 before_script 之后）
                         Dispatcher.Invoke(() =>
@@ -618,6 +634,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         {
                             sftp.UploadFile(ufs, tempPath, true, uploaded =>
                             {
+                                if (_ctsAll?.IsCancellationRequested == true || _ctsCurrent?.IsCancellationRequested == true)
+                                {
+                                    try { ufs.Close(); } catch { }
+                                    return;
+                                }
                                 var current = uploadedBytes + (long)uploaded;
                                 var percent = Math.Min(100.0, current * 100.0 / totalBytes);
                                 var currentFilePercent = Math.Min(100.0, (double)uploaded * 100.0 / Math.Max(1, (double)job.FileInfo.Length));
@@ -649,7 +670,23 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         {
                             // 回退策略：若改名失败，尝试直接覆盖上传
                             using var ufs2 = File.OpenRead(job.File.LocalPath);
-                            sftp.UploadFile(ufs2, remotePath, true);
+                            sftp.UploadFile(ufs2, remotePath, true, uploaded =>
+                            {
+                                if (_ctsAll?.IsCancellationRequested == true || _ctsCurrent?.IsCancellationRequested == true)
+                                {
+                                    try { ufs2.Close(); } catch { }
+                                    return;
+                                }
+                                var current = uploadedBytes + (long)uploaded;
+                                var percent = Math.Min(100.0, current * 100.0 / totalBytes);
+                                var currentFilePercent = Math.Min(100.0, (double)uploaded * 100.0 / Math.Max(1, (double)job.FileInfo.Length));
+                                Dispatcher.Invoke(() =>
+                                {
+                                    UploadProgress = percent;
+                                    CurrentFileProgress = currentFilePercent;
+                                    CurrentFileSizeText = $"{FormatBytes((long)uploaded)} / {FormatBytes(job.FileInfo.Length)}";
+                                });
+                            });
                             // 尝试清理临时文件
                             try
                             {
@@ -720,10 +757,23 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
 
                     successCount++;
                 }
+                catch (OperationCanceledException)
+                {
+                    failCount++;
+                    if (_ctsAll?.IsCancellationRequested == true)
+                        AppendLog($"[{job.Server.Alias}] 已取消（已终止全部上传任务）");
+                    else
+                        AppendLog($"[{job.Server.Alias}] 已取消当前文件上传");
+                }
                 catch (Exception ex)
                 {
                     failCount++;
-                    AppendLog($"[{job.Server.Alias}] 上传失败：" + ToChineseError(ex));
+                    if (_ctsAll?.IsCancellationRequested == true)
+                        AppendLog($"[{job.Server.Alias}] 已取消（已终止全部上传任务）");
+                    else if (_ctsCurrent?.IsCancellationRequested == true)
+                        AppendLog($"[{job.Server.Alias}] 已取消当前文件上传");
+                    else
+                        AppendLog($"[{job.Server.Alias}] 上传失败：" + ToChineseError(ex));
                 }
                 finally
                 {
@@ -736,7 +786,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             }
 
             // 最终状态汇总
-            if (failCount == 0)
+            if (_ctsAll?.IsCancellationRequested == true)
+            {
+                UploadStatus = $"已终止所有任务，已完成 {successCount}/{jobs.Count}";
+            }
+            else if (failCount == 0)
             {
                 UploadProgress = 100;
                 UploadStatus = "全部上传完成";
@@ -754,12 +808,19 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         {
             _isUploading = false;
             OnPropertyChanged(nameof(CanUpload));
+            OnPropertyChanged(nameof(CanCancel));
+            _ctsCurrent?.Dispose();
+            _ctsAll?.Dispose();
+            _ctsCurrent = null;
+            _ctsAll = null;
         }
     }
 
     private static string ToChineseError(Exception ex)
     {
         // 简单的中文错误转换/直出
+        if (ex is OperationCanceledException)
+            return "操作已取消";
         if (ex is SshAuthenticationException)
             return "认证失败，请检查用户名或密码。";
         if (ex is SshConnectionException)
@@ -799,6 +860,24 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             {
                 // 忽略创建目录的异常（可能已存在或无权限）
             }
+        }
+    }
+
+    private void OnCancelCurrentClick(object sender, RoutedEventArgs e)
+    {
+        if (_isUploading)
+        {
+            _ctsCurrent?.Cancel();
+            AppendLog("用户请求终止当前文件上传。");
+        }
+    }
+
+    private void OnCancelAllClick(object sender, RoutedEventArgs e)
+    {
+        if (_isUploading)
+        {
+            _ctsAll?.Cancel();
+            AppendLog("用户请求终止所有上传任务。");
         }
     }
 

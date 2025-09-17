@@ -84,6 +84,9 @@
                             <ProgressBar Width="300" Height="20" Minimum="0" Maximum="100" Value="{Binding UploadProgress}" />
                             <TextBlock Text="{Binding UploadStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
 
+                            <Button Content="终止当前" Width="100" Margin="12,0,0,0" Click="OnCancelCurrentClick" IsEnabled="{Binding CanCancel}" />
+                            <Button Content="终止全部" Width="100" Margin="8,0,0,0" Click="OnCancelAllClick" IsEnabled="{Binding CanCancel}" />
+
                             <TextBlock Text="  当前文件上传进度：" VerticalAlignment="Center" Margin="24,0,0,0" />
                             <ProgressBar Width="220" Height="20" Minimum="0" Maximum="100" Value="{Binding CurrentFileProgress}" Margin="8,0,0,0" />
                             <TextBlock Text="{Binding CurrentFileProgress, StringFormat={}{0:0}%}" VerticalAlignment="Center" Margin="8,0,0,0" />
