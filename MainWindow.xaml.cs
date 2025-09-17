@@ -170,9 +170,36 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
     }
 
+    // 任务列表（本次上传）
+    public ObservableCollection<UploadTaskItem> UploadTasks { get; } = new();
+
     public bool CanUpload => !_isUploading && Files.Any(f => f.IsSelected);
     public bool CanCancel => _isUploading;
+    public bool IsUploading => _isUploading;
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public class UploadTaskItem : INotifyPropertyChanged
+    {
+        public FileConfig File { get; set; } = null!;
+        public ServerConfig Server { get; set; } = null!;
+
+        private string _detail = string.Empty;
+        public string Detail
+        {
+            get => _detail;
+            set { _detail = value; OnPropertyChanged(nameof(Detail)); }
+        }
+
+        private string _status = string.Empty;
+        public string Status
+        {
+            get => _status;
+            set { _status = value; OnPropertyChanged(nameof(Status)); }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
 
     private void SubscribeFile(FileConfig file)
     {
@@ -450,6 +477,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         _isUploading = true;
         OnPropertyChanged(nameof(CanUpload));
         OnPropertyChanged(nameof(CanCancel));
+        OnPropertyChanged(nameof(IsUploading));
         UploadStatus = "正在上传...";
         UploadProgress = 0;
         ClearLog();
@@ -472,6 +500,20 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 return;
             }
 
+            // 构建任务列表到右侧表格
+            UploadTasks.Clear();
+            foreach (var j in jobs)
+            {
+                var detail = System.IO.Path.GetFileName(j.File.LocalPath) + " -> " + j.Server.Alias + " (" + j.Server.Host + "):" + j.File.TargetPath;
+                UploadTasks.Add(new UploadTaskItem
+                {
+                    File = j.File,
+                    Server = j.Server,
+                    Detail = detail,
+                    Status = "等待中"
+                });
+            }
+
             UploadStatus = $"已上传 0/{jobs.Count}";
 
             var totalBytes = jobs.Sum(j => j.FileInfo.Length);
@@ -484,6 +526,9 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             {
                 if (_ctsAll?.IsCancellationRequested == true)
                     break;
+
+                var taskItem = UploadTasks.FirstOrDefault(t => ReferenceEquals(t.File, job.File) && ReferenceEquals(t.Server, job.Server));
+                if (taskItem != null) taskItem.Status = "上传中";
                 _ctsCurrent?.Dispose();
                 _ctsCurrent = new CancellationTokenSource();
                 var scriptLogs = new List<string>();
@@ -614,6 +659,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                                     {
                                         CurrentFileProgress = 100;
                                         CurrentFileSizeText = $"{FormatBytes(job.FileInfo.Length)} / {FormatBytes(job.FileInfo.Length)}";
+                                        if (taskItem != null) taskItem.Status = "成功(已是最新)";
                                     });
                                     return;
                                 }
@@ -718,6 +764,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                             AppendLog($"[{job.Server.Alias}] 上传成功。");
                             CurrentFileProgress = 100;
                             CurrentFileSizeText = $"{FormatBytes(job.FileInfo.Length)} / {FormatBytes(job.FileInfo.Length)}";
+                            if (taskItem != null) taskItem.Status = "成功";
                             if (!string.IsNullOrWhiteSpace(job.File.Permission))
                             {
                                 if (permApplied)
@@ -760,6 +807,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 catch (OperationCanceledException)
                 {
                     failCount++;
+                    if (taskItem != null) taskItem.Status = "已取消";
                     if (_ctsAll?.IsCancellationRequested == true)
                         AppendLog($"[{job.Server.Alias}] 已取消（已终止全部上传任务）");
                     else
@@ -768,6 +816,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 catch (Exception ex)
                 {
                     failCount++;
+                    if (taskItem != null) taskItem.Status = "失败";
                     if (_ctsAll?.IsCancellationRequested == true)
                         AppendLog($"[{job.Server.Alias}] 已取消（已终止全部上传任务）");
                     else if (_ctsCurrent?.IsCancellationRequested == true)
@@ -809,6 +858,7 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             _isUploading = false;
             OnPropertyChanged(nameof(CanUpload));
             OnPropertyChanged(nameof(CanCancel));
+            OnPropertyChanged(nameof(IsUploading));
             _ctsCurrent?.Dispose();
             _ctsAll?.Dispose();
             _ctsCurrent = null;
@@ -881,6 +931,292 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
     }
 
+    private async void OnRetryUploadTaskClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.DataContext is UploadTaskItem task)
+        {
+            if (_isUploading)
+            {
+                AppendLog("当前正在上传，请稍后再试。");
+                return;
+            }
+            await StartSingleUploadAsync(task);
+        }
+    }
+
+    private async Task StartSingleUploadAsync(UploadTaskItem taskItem)
+    {
+        _isUploading = true;
+        OnPropertyChanged(nameof(CanUpload));
+        OnPropertyChanged(nameof(CanCancel));
+        OnPropertyChanged(nameof(IsUploading));
+        UploadStatus = "正在上传...";
+        UploadProgress = 0;
+        _ctsAll = new CancellationTokenSource();
+        _ctsCurrent = new CancellationTokenSource();
+
+        try
+        {
+            var file = taskItem.File;
+            var server = taskItem.Server;
+            var fileInfo = new FileInfo(file.LocalPath);
+            if (!fileInfo.Exists)
+            {
+                taskItem.Status = "失败(文件不存在)";
+                AppendLog($"[{server.Alias}] 重传失败：本地文件不存在。");
+                return;
+            }
+
+            taskItem.Status = "上传中";
+            UploadStatus = "已上传 0/1";
+
+            long totalBytes = fileInfo.Length;
+            if (totalBytes == 0) totalBytes = 1;
+            long uploadedBytes = 0;
+
+            await Task.Run(() =>
+            {
+                if (_ctsAll?.IsCancellationRequested == true) throw new OperationCanceledException("所有上传任务已取消");
+                if (_ctsCurrent?.IsCancellationRequested == true) throw new OperationCanceledException("当前文件上传已取消");
+
+                var remotePath = file.TargetPath.Replace("\\", "/");
+
+                var (script, parseError) = TryParseScriptYaml(file.ScriptYaml);
+                var hasYaml = !string.IsNullOrWhiteSpace(file.ScriptYaml);
+                var vars = BuildScriptVariables(file, server, remotePath);
+
+                var connectionInfo = new ConnectionInfo(server.Host, server.Port, server.Username,
+                    new PasswordAuthenticationMethod(server.Username, server.Password))
+                {
+                    Encoding = Encoding.UTF8
+                };
+
+                using var ssh = new SshClient(connectionInfo);
+                ssh.Connect();
+
+                var scriptLogs = new List<string>();
+                var parseErrorLogged = false;
+                if (script?.BeforeScript != null && script.BeforeScript.Count > 0)
+                {
+                    if (!ExecuteStepsRemote(ssh, script.BeforeScript, vars, scriptLogs, $"[{server.Alias}] [before]", line => Dispatcher.Invoke(() => AppendParsedLog(line))))
+                        throw new Exception("预处理脚本失败");
+                }
+                else
+                {
+                    if (hasYaml && !string.IsNullOrWhiteSpace(parseError))
+                    {
+                        Dispatcher.Invoke(() => AppendLog($"[{server.Alias}] 脚本解析失败：{parseError}（不执行任何脚本）"));
+                        parseErrorLogged = true;
+                    }
+                    else
+                    {
+                        Dispatcher.Invoke(() => AppendLog($"[{server.Alias}] [before] 未检测到 before_script（不执行）"));
+                    }
+                }
+
+                if (_ctsAll?.IsCancellationRequested == true) throw new OperationCanceledException("所有上传任务已取消");
+                if (_ctsCurrent?.IsCancellationRequested == true) throw new OperationCanceledException("当前文件上传已取消");
+
+                Dispatcher.Invoke(() =>
+                {
+                    AppendLog($"开始上传：{file.LocalPath} -> {server.Alias} ({server.Host}):{file.TargetPath}");
+                    CurrentFileLabel = System.IO.Path.GetFileName(file.LocalPath) + " @ " + server.Alias;
+                    CurrentFileProgress = 0;
+                    CurrentFileSizeText = $"{FormatBytes(0)} / {FormatBytes(fileInfo.Length)}";
+                });
+
+                using var sftp = new SftpClient(connectionInfo);
+                sftp.Connect();
+
+                string localHash;
+                using (var lfs = File.OpenRead(file.LocalPath))
+                {
+                    localHash = ComputeSha256Hex(lfs);
+                }
+
+                try
+                {
+                    if (sftp.Exists(remotePath))
+                    {
+                        using var rfs = sftp.OpenRead(remotePath);
+                        var remoteHash = ComputeSha256Hex(rfs);
+                        if (string.Equals(localHash, remoteHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            bool permApplied = false;
+                            string? permError = null;
+                            string? appliedPermDigits = null;
+                            if (TryParsePermissionOctal(file.Permission, out var mode))
+                                try { sftp.ChangePermissions(remotePath, mode); permApplied = true; appliedPermDigits = file.Permission; }
+                                catch (Exception exPerm) { permError = ToChineseError(exPerm); }
+
+                            sftp.Disconnect();
+
+                            Dispatcher.Invoke(() =>
+                            {
+                                AppendLog($"[{server.Alias}] 已是最新，无需更新。");
+                                if (!string.IsNullOrWhiteSpace(file.Permission))
+                                {
+                                    if (permApplied) AppendLog($"[{server.Alias}] 已设置权限：{appliedPermDigits ?? file.Permission}");
+                                    else if (permError != null) AppendLog($"[{server.Alias}] 设置权限失败：{permError}");
+                                }
+
+                                CurrentFileProgress = 100;
+                                CurrentFileSizeText = $"{FormatBytes(fileInfo.Length)} / {FormatBytes(fileInfo.Length)}";
+                                taskItem.Status = "成功(已是最新)";
+                            });
+
+                            if (script?.AfterScript != null && script.AfterScript.Count > 0)
+                                ExecuteStepsRemote(ssh, script.AfterScript, vars, scriptLogs, $"[{server.Alias}] [after]", line => Dispatcher.Invoke(() => AppendParsedLog(line)));
+                            else
+                            {
+                                if (hasYaml && !string.IsNullOrWhiteSpace(parseError) && !parseErrorLogged)
+                                {
+                                    Dispatcher.Invoke(() => AppendLog($"[{server.Alias}] 脚本解析失败：{parseError}（不执行任何脚本）"));
+                                    parseErrorLogged = true;
+                                }
+                                else
+                                    Dispatcher.Invoke(() => AppendLog($"[{server.Alias}] [after] 未检测到 after_script（不执行）"));
+                            }
+
+                            Dispatcher.Invoke(() => { UploadStatus = "已上传 1/1"; UploadProgress = 100; });
+                            try { ssh.Disconnect(); } catch { }
+                            return;
+                        }
+                    }
+                }
+                catch { }
+
+                var remoteDir = Path.GetDirectoryName(remotePath)?.Replace("\\", "/") ?? "/";
+                CreateRemoteDirectoriesSafe(sftp, remoteDir);
+
+                var tempPath = (remoteDir.EndsWith("/") ? remoteDir : remoteDir + "/") + ".uploading_" + Guid.NewGuid().ToString("N");
+                using (var ufs = File.OpenRead(file.LocalPath))
+                {
+                    sftp.UploadFile(ufs, tempPath, true, uploaded =>
+                    {
+                        if (_ctsAll?.IsCancellationRequested == true || _ctsCurrent?.IsCancellationRequested == true)
+                        {
+                            try { ufs.Close(); } catch { }
+                            return;
+                        }
+                        var current = uploadedBytes + (long)uploaded;
+                        var percent = Math.Min(100.0, current * 100.0 / totalBytes);
+                        var currentFilePercent = Math.Min(100.0, (double)uploaded * 100.0 / Math.Max(1, (double)fileInfo.Length));
+                        Dispatcher.Invoke(() =>
+                        {
+                            UploadProgress = percent;
+                            CurrentFileProgress = currentFilePercent;
+                            CurrentFileSizeText = $"{FormatBytes((long)uploaded)} / {FormatBytes(fileInfo.Length)}";
+                        });
+                    });
+                }
+
+                try
+                {
+                    if (sftp.Exists(remotePath))
+                    {
+                        try { sftp.DeleteFile(remotePath); } catch { }
+                    }
+                    sftp.RenameFile(tempPath, remotePath);
+                }
+                catch
+                {
+                    using var ufs2 = File.OpenRead(file.LocalPath);
+                    sftp.UploadFile(ufs2, remotePath, true, uploaded =>
+                    {
+                        if (_ctsAll?.IsCancellationRequested == true || _ctsCurrent?.IsCancellationRequested == true)
+                        {
+                            try { ufs2.Close(); } catch { }
+                            return;
+                        }
+                        var current = uploadedBytes + (long)uploaded;
+                        var percent = Math.Min(100.0, current * 100.0 / totalBytes);
+                        var currentFilePercent = Math.Min(100.0, (double)uploaded * 100.0 / Math.Max(1, (double)fileInfo.Length));
+                        Dispatcher.Invoke(() =>
+                        {
+                            UploadProgress = percent;
+                            CurrentFileProgress = currentFilePercent;
+                            CurrentFileSizeText = $"{FormatBytes((long)uploaded)} / {FormatBytes(fileInfo.Length)}";
+                        });
+                    });
+                    try { if (sftp.Exists(tempPath)) sftp.DeleteFile(tempPath); } catch { }
+                }
+
+                bool permApplied2 = false;
+                string? permError2 = null;
+                string? appliedPermDigits2 = null;
+                if (TryParsePermissionOctal(file.Permission, out var mode2))
+                    try { sftp.ChangePermissions(remotePath, mode2); permApplied2 = true; appliedPermDigits2 = file.Permission; }
+                    catch (Exception exPerm) { permError2 = ToChineseError(exPerm); }
+
+                sftp.Disconnect();
+
+                Dispatcher.Invoke(() =>
+                {
+                    AppendLog($"[{server.Alias}] 上传成功。");
+                    CurrentFileProgress = 100;
+                    CurrentFileSizeText = $"{FormatBytes(fileInfo.Length)} / {FormatBytes(fileInfo.Length)}";
+                    taskItem.Status = "成功";
+                    if (!string.IsNullOrWhiteSpace(file.Permission))
+                    {
+                        if (permApplied2) AppendLog($"[{server.Alias}] 已设置权限：{appliedPermDigits2 ?? file.Permission}");
+                        else if (permError2 != null) AppendLog($"[{server.Alias}] 设置权限失败：{permError2}");
+                    }
+                });
+
+                if (script?.AfterScript != null && script.AfterScript.Count > 0)
+                {
+                    ExecuteStepsRemote(ssh, script.AfterScript, vars, scriptLogs, $"[{server.Alias}] [after]", line => Dispatcher.Invoke(() => AppendParsedLog(line)));
+                }
+                else
+                {
+                    if (hasYaml && !string.IsNullOrWhiteSpace(parseError) && !parseErrorLogged)
+                    {
+                        Dispatcher.Invoke(() => AppendLog($"[{server.Alias}] 脚本解析失败：{parseError}（不执行任何脚本）"));
+                        parseErrorLogged = true;
+                    }
+                    else
+                    {
+                        Dispatcher.Invoke(() => AppendLog($"[{server.Alias}] [after] 未检测到 after_script（不执行）"));
+                    }
+                }
+
+                try { ssh.Disconnect(); } catch { }
+
+                Dispatcher.Invoke(() => { UploadStatus = "已上传 1/1"; UploadProgress = 100; });
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            taskItem.Status = "已取消";
+            if (_ctsAll?.IsCancellationRequested == true)
+                AppendLog($"[{taskItem.Server.Alias}] 已取消（已终止全部上传任务）");
+            else
+                AppendLog($"[{taskItem.Server.Alias}] 已取消当前文件上传");
+        }
+        catch (Exception ex)
+        {
+            taskItem.Status = "失败";
+            if (_ctsAll?.IsCancellationRequested == true)
+                AppendLog($"[{taskItem.Server.Alias}] 已取消（已终止全部上传任务）");
+            else if (_ctsCurrent?.IsCancellationRequested == true)
+                AppendLog($"[{taskItem.Server.Alias}] 已取消当前文件上传");
+            else
+                AppendLog($"[{taskItem.Server.Alias}] 上传失败：" + ToChineseError(ex));
+        }
+        finally
+        {
+            _isUploading = false;
+            OnPropertyChanged(nameof(CanUpload));
+            OnPropertyChanged(nameof(CanCancel));
+            OnPropertyChanged(nameof(IsUploading));
+            _ctsCurrent?.Dispose();
+            _ctsAll?.Dispose();
+            _ctsCurrent = null;
+            _ctsAll = null;
+        }
+    }
+
     private void SaveConfig()
     {
         try
@@ -936,6 +1272,15 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
             if (logRatio == null && _lastLogRatio.HasValue)
                 logRatio = _lastLogRatio.Value;
 
+            // 计算右侧任务面板宽度（竖向分隔条位置）
+            double? tasksPaneWidth = null;
+            try
+            {
+                var w = TasksCol?.ActualWidth ?? 0;
+                if (w > 30) tasksPaneWidth = w; // 合理最小值，避免异常
+            }
+            catch { }
+
             var data = new ConfigData
             {
                 Servers = Servers.Select(s => new ServerConfig
@@ -959,7 +1304,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 WindowWidth = saveWidth,
                 WindowHeight = saveHeight,
                 WindowState = saveState,
-                LogAreaRatio = logRatio
+                LogAreaRatio = logRatio,
+                TasksPaneWidth = tasksPaneWidth
             };
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
             File.WriteAllText(_configFile, json, Encoding.UTF8);
@@ -998,6 +1344,12 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                     HomeBottomRow.Height = new GridLength(r, GridUnitType.Star);
                     _lastLogRatio = r;
                 }
+            }
+
+            // 应用右侧任务面板宽度（竖向分隔条位置）
+            if (data.TasksPaneWidth.HasValue && data.TasksPaneWidth.Value > 30)
+            {
+                TasksCol.Width = new GridLength(data.TasksPaneWidth.Value, GridUnitType.Pixel);
             }
 
             Servers.Clear();
@@ -1820,5 +2172,6 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         public double? WindowHeight { get; set; }
         public string? WindowState { get; set; }
         public double? LogAreaRatio { get; set; }
+        public double? TasksPaneWidth { get; set; }
     }
 }

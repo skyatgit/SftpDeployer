@@ -92,9 +92,51 @@
                             <TextBlock Text="{Binding CurrentFileProgress, StringFormat={}{0:0}%}" VerticalAlignment="Center" Margin="8,0,0,0" />
                             <TextBlock Text="{Binding CurrentFileSizeText}" VerticalAlignment="Center" Margin="8,0,0,0" />
                         </StackPanel>
-                        <GroupBox Header="日志" MinHeight="60">
-                            <RichTextBox x:Name="LogRichBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Foreground="White" />
-                        </GroupBox>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" x:Name="LogCol" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="420" x:Name="TasksCol" />
+                            </Grid.ColumnDefinitions>
+
+                            <GroupBox Header="日志" MinHeight="60" Grid.Column="0" Margin="0">
+                                <RichTextBox x:Name="LogRichBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Foreground="White" />
+                            </GroupBox>
+
+                            <GridSplitter Grid.Column="1"
+                                          Width="10"
+                                          HorizontalAlignment="Stretch"
+                                          Background="#33000000"
+                                          ResizeDirection="Columns"
+                                          ResizeBehavior="PreviousAndNext"
+                                          ShowsPreview="True"
+                                          IsTabStop="False"
+                                          Cursor="SizeWE"
+                                          Margin="0"
+                                          DragCompleted="OnHomeSplitterDragCompleted" />
+
+                            <GroupBox Header="本次上传任务" Grid.Column="2" MinWidth="380">
+                                <DataGrid x:Name="TasksGrid"
+                                          ItemsSource="{Binding UploadTasks}"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False"
+                                          IsReadOnly="True"
+                                          HeadersVisibility="Column"
+                                          ColumnWidth="*">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="任务详情" Binding="{Binding Detail}" Width="*" MinWidth="160" />
+                                        <DataGridTextColumn Header="完成状态" Binding="{Binding Status}" Width="Auto" MinWidth="80" />
+                                        <DataGridTemplateColumn Header="操作" Width="Auto" MinWidth="100">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Button Content="重新上传" Width="90" Click="OnRetryUploadTaskClick" />
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </GroupBox>
+                        </Grid>
                     </DockPanel>
                 </Grid>
             </TabItem>
