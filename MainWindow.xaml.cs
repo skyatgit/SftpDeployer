@@ -431,6 +431,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 return;
             }
 
+            UploadStatus = $"已上传 0/{jobs.Count}";
+
             var totalBytes = jobs.Sum(j => j.FileInfo.Length);
             if (totalBytes == 0) totalBytes = 1;
             long uploadedBytes = 0;
@@ -671,11 +673,11 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                 }
                 finally
                 {
-                    // 即使失败也按该任务大小推进全局进度
+                    // 即使失败也按该任务大小推进全局进度（按任务数量计）
                     uploadedBytes += job.FileInfo.Length;
-                    var percent = Math.Min(100.0, uploadedBytes * 100.0 / totalBytes);
-                    UploadStatus = $"已完成：{Math.Round(percent, 1)}%";
-                    UploadProgress = percent;
+                    var completedJobs = successCount + failCount;
+                    UploadStatus = $"已上传 {completedJobs}/{jobs.Count}";
+                    UploadProgress = Math.Min(100.0, completedJobs * 100.0 / jobs.Count);
                 }
             }
 
