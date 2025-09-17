@@ -133,6 +133,40 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         }
     }
 
+    // 新增：当前文件进度与标签（供界面显示当前上传文件的进度）
+    private double _currentFileProgress;
+    public double CurrentFileProgress
+    {
+        get => _currentFileProgress;
+        set
+        {
+            _currentFileProgress = value;
+            OnPropertyChanged(nameof(CurrentFileProgress));
+        }
+    }
+
+    private string _currentFileLabel = string.Empty;
+    public string CurrentFileLabel
+    {
+        get => _currentFileLabel;
+        set
+        {
+            _currentFileLabel = value;
+            OnPropertyChanged(nameof(CurrentFileLabel));
+        }
+    }
+
+    private string _currentFileSizeText = string.Empty;
+    public string CurrentFileSizeText
+    {
+        get => _currentFileSizeText;
+        set
+        {
+            _currentFileSizeText = value;
+            OnPropertyChanged(nameof(CurrentFileSizeText));
+        }
+    }
+
     public bool CanUpload => !_isUploading && Files.Any(f => f.IsSelected);
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -486,7 +520,13 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         }
 
                         // 在执行 SFTP 操作前输出开始上传日志（紧跟在 before_script 之后）
-                        Dispatcher.Invoke(() => AppendLog($"开始上传：{job.File.LocalPath} -> {job.Server.Alias} ({job.Server.Host}):{job.File.TargetPath}"));
+                        Dispatcher.Invoke(() =>
+                        {
+                            AppendLog($"开始上传：{job.File.LocalPath} -> {job.Server.Alias} ({job.Server.Host}):{job.File.TargetPath}");
+                            CurrentFileLabel = System.IO.Path.GetFileName(job.File.LocalPath) + " @ " + job.Server.Alias;
+                            CurrentFileProgress = 0;
+                            CurrentFileSizeText = $"{FormatBytes(0)} / {FormatBytes(job.FileInfo.Length)}";
+                        });
 
                         using var sftp = new SftpClient(connectionInfo);
                         sftp.Connect();
@@ -553,6 +593,12 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                                         }
                                     }
 
+                                    // 跳过上传时也将当前文件进度置为100%
+                                    Dispatcher.Invoke(() =>
+                                    {
+                                        CurrentFileProgress = 100;
+                                        CurrentFileSizeText = $"{FormatBytes(job.FileInfo.Length)} / {FormatBytes(job.FileInfo.Length)}";
+                                    });
                                     return;
                                 }
                             }
@@ -574,7 +620,13 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                             {
                                 var current = uploadedBytes + (long)uploaded;
                                 var percent = Math.Min(100.0, current * 100.0 / totalBytes);
-                                Dispatcher.Invoke(() => UploadProgress = percent);
+                                var currentFilePercent = Math.Min(100.0, (double)uploaded * 100.0 / Math.Max(1, (double)job.FileInfo.Length));
+                                Dispatcher.Invoke(() =>
+                                {
+                                    UploadProgress = percent;
+                                    CurrentFileProgress = currentFilePercent;
+                                    CurrentFileSizeText = $"{FormatBytes((long)uploaded)} / {FormatBytes(job.FileInfo.Length)}";
+                                });
                             });
                         }
 
@@ -627,6 +679,8 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
                         Dispatcher.Invoke(() =>
                         {
                             AppendLog($"[{job.Server.Alias}] 上传成功。");
+                            CurrentFileProgress = 100;
+                            CurrentFileSizeText = $"{FormatBytes(job.FileInfo.Length)} / {FormatBytes(job.FileInfo.Length)}";
                             if (!string.IsNullOrWhiteSpace(job.File.Permission))
                             {
                                 if (permApplied)
@@ -713,6 +767,19 @@ public partial class MainWindow : FluentWindow, INotifyPropertyChanged
         if (ex is IOException)
             return "文件读写失败，请检查本地文件路径与权限。";
         return ex.Message;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double size = bytes;
+        int unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+        return $"{size:0.##} {units[unit]}";
     }
 
     private static void CreateRemoteDirectoriesSafe(SftpClient sftp, string remoteDir)

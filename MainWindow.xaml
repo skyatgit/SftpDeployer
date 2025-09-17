@@ -83,6 +83,11 @@
                             <TextBlock Text="  进度：" VerticalAlignment="Center" Margin="12,0,0,0" />
                             <ProgressBar Width="300" Height="20" Minimum="0" Maximum="100" Value="{Binding UploadProgress}" />
                             <TextBlock Text="{Binding UploadStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
+
+                            <TextBlock Text="  当前文件上传进度：" VerticalAlignment="Center" Margin="24,0,0,0" />
+                            <ProgressBar Width="220" Height="20" Minimum="0" Maximum="100" Value="{Binding CurrentFileProgress}" Margin="8,0,0,0" />
+                            <TextBlock Text="{Binding CurrentFileProgress, StringFormat={}{0:0}%}" VerticalAlignment="Center" Margin="8,0,0,0" />
+                            <TextBlock Text="{Binding CurrentFileSizeText}" VerticalAlignment="Center" Margin="8,0,0,0" />
                         </StackPanel>
                         <GroupBox Header="日志" MinHeight="60">
                             <RichTextBox x:Name="LogRichBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Foreground="White" />
